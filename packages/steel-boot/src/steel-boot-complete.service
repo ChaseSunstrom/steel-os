@@ -1,0 +1,30 @@
+[Unit]
+Description=Verify this deployment is healthy, then bless it
+Documentation=man:systemd-bless-boot.service(8)
+
+# The ordering here is the whole point. Blessing must happen AFTER the things
+# that would make a deployment unusable have had a chance to fail, not merely
+# after systemd has started them.
+After=multi-user.target graphical.target network-online.target
+Wants=graphical.target
+
+# Only run when there is a counter to clear. On a blessed deployment this is a
+# no-op, and running the health check every boot would waste 60 seconds of
+# someone's time for nothing.
+ConditionPathExists=|/run/systemd/bless-boot-counter
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steelos/boot-complete-health.sh
+ExecStart=/usr/bin/steel-boot bless
+
+# If the health check fails we do NOT bless. The boot counter is left alone, so
+# the next boot decrements it, and after three failures the bootloader falls
+# back to the previous generation with nobody present.
+#
+# Deliberately no Restart=: retrying inside the same boot would eventually
+# succeed against a machine that is still broken, and bless it.
+
+[Install]
+WantedBy=graphical.target

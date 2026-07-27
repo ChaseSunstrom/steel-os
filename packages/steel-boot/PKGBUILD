@@ -1,0 +1,36 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-boot
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS boot chain: UKI staging, A/B slot activation, boot counting, TPM sealing"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('systemd' 'bash')
+optdepends=(
+  'sbctl: Secure Boot key management and UKI signature verification'
+  'tpm2-tools: TPM2 unlock enrollment'
+  'cryptsetup: verity status for the health check'
+  'steel-check: the health check consults it before blessing a deployment'
+)
+source=(
+  'src/steel-boot'
+  'src/boot-complete-health.sh'
+  'src/steel-boot-complete.service'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/steel-boot" "$pkgdir/usr/bin/steel-boot"
+  install -Dm755 "$srcdir/boot-complete-health.sh" \
+    "$pkgdir/usr/lib/steelos/boot-complete-health.sh"
+  install -Dm644 "$srcdir/steel-boot-complete.service" \
+    "$pkgdir/usr/lib/systemd/system/steel-boot-complete.service"
+
+  # Enabled by symlink rather than by an .install scriptlet: on an image
+  # deployment /etc is reconciled, and a scriptlet that ran at package build
+  # time would not be reflected there.
+  install -dm755 "$pkgdir/usr/lib/systemd/system/graphical.target.wants"
+  ln -s ../steel-boot-complete.service \
+    "$pkgdir/usr/lib/systemd/system/graphical.target.wants/steel-boot-complete.service"
+}

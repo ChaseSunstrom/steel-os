@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tools/steel-check"]
+members = ["tools/steel-check", "steelctl"]
 
 [workspace.package]
 version = "0.1.0"

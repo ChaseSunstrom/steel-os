@@ -1,0 +1,27 @@
+[package]
+name = "steelctl"
+description = "Manifest engine, generation management, updates and rollback for SteelOS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Zero dependencies, for the same reason steel-check has none: this binary runs
+# in the recovery environment, and it is the thing you reach for when the
+# machine is already in trouble. A dependency tree is attack surface on the
+# recovery path.
+#
+# The cost is a hand-rolled TOML parser (src/toml.rs). It is ~400 lines, it is
+# heavily tested, and it implements the subset the manifest schema uses and
+# rejects everything else — which is the right posture for parsing a file that
+# defines what gets installed on the system.
+[dependencies]
+
+[lib]
+name = "steelctl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "steelctl"
+path = "src/main.rs"

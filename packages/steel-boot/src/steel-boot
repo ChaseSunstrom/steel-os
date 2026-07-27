@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+#
+# steel-boot — UKI installation, A/B slot activation, boot counting, TPM sealing.
+#
+# The rule this tool exists to enforce, from CLAUDE.md:
+#
+#   "Implement boot counting before shipping any update mechanism — it's what
+#    makes bad updates survivable."
+#
+# The reason is worth stating rather than assuming. An image that boots to a
+# black screen is unrecoverable for every user who took it: they cannot read the
+# boot menu because there is no display, and they cannot run `steelctl rollback`
+# because there is no session. Automatic demotion is the only thing that gets
+# those machines back, and it has to work with nobody present.
+
+set -euo pipefail
+
+ESP=${STEEL_ESP:-/efi}
+STATE=${STEEL_STATE:-/var/lib/steelos}
+ENTRY_DIR="$ESP/EFI/Linux"
+
+# Three attempts. One would demote on a fluke — a hardware hiccup, a user
+# hitting reset — and many would waste a lot of someone's time on a genuinely
+# broken image before giving up.
+BOOT_ATTEMPTS=${STEEL_BOOT_ATTEMPTS:-3}
+
+die() { printf 'steel-boot: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-boot: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+slot_valid() { [[ $1 == a || $1 == b ]]; }
+
+active_slot() {
+  local slot
+  slot=$(cat "$STATE/active-slot" 2>/dev/null || true)
+  slot_valid "$slot" || die "no valid active slot recorded; run 'steelctl repair'"
+  printf '%s' "$slot"
+}
+
+inactive_slot() {
+  [[ $(active_slot) == a ]] && printf 'b' || printf 'a'
+}
+
+# --- installing a staged UKI --------------------------------------------------
+
+cmd_stage() {
+  need_root
+  local uki=${1:?usage: steel-boot stage <uki-path> [slot]}
+  local slot=${2:-$(inactive_slot)}
+  slot_valid "$slot" || die "slot must be a or b"
+  [[ -f $uki ]] || die "$uki does not exist"
+
+  [[ $slot != "$(active_slot)" ]] || die "refusing to overwrite the running slot ($slot)"
+
+  # Verify the signature BEFORE installing. An unsigned UKI on the ESP is a
+  # machine that fails to boot with a firmware error most users cannot read,
+  # and it is entirely avoidable here.
+  if command -v sbverify >/dev/null && [[ -f /var/lib/sbctl/keys/db/db.pem ]]; then
+    sbverify --cert /var/lib/sbctl/keys/db/db.pem "$uki" >/dev/null \
+      || die "$uki is not signed by this machine's key.
+     Installing it would produce a machine that will not boot and cannot say why."
+  else
+    note "WARNING: cannot verify the UKI signature (sbverify or keys missing)"
+  fi
+
+  mkdir -p "$ENTRY_DIR"
+
+  # Install with a boot counter in the filename. systemd-boot decrements it on
+  # each attempt; systemd-bless-boot strips it once boot-complete.target is
+  # reached. An entry that runs out of tries is skipped by the bootloader.
+  local target="$ENTRY_DIR/steelos-$slot+$BOOT_ATTEMPTS-0.efi"
+
+  # Remove any previous entry for this slot, counted or blessed, or the
+  # bootloader sees two and picks unpredictably.
+  rm -f "$ENTRY_DIR/steelos-$slot.efi" "$ENTRY_DIR/steelos-$slot+"*.efi
+
+  # Copy to a temporary name and rename: a UKI half-written to the ESP during a
+  # power loss is a boot entry the firmware will try and fail to load.
+  cp "$uki" "$target.tmp"
+  sync
+  mv "$target.tmp" "$target"
+  sync
+
+  note "staged slot $slot with $BOOT_ATTEMPTS boot attempts"
+  note "the running slot $(active_slot) is untouched and stays bootable"
+}
+
+cmd_activate() {
+  need_root
+  local slot=${1:?usage: steel-boot activate <slot>}
+  slot_valid "$slot" || die "slot must be a or b"
+  compgen -G "$ENTRY_DIR/steelos-$slot*.efi" >/dev/null \
+    || die "slot $slot has no boot entry on the ESP"
+
+  # systemd-boot picks the default from loader.conf. Writing it here rather
+  # than reordering entries keeps the ESP's shape identical across machines,
+  # which the deniability design requires.
+  printf 'default steelos-%s*.efi\ntimeout 3\nconsole-mode keep\neditor no\n' "$slot" \
+    > "$ESP/loader/loader.conf"
+  printf '%s\n' "$slot" > "$STATE/active-slot"
+  sync
+  note "slot $slot boots next"
+}
+
+# editor no, above, is load-bearing: with the editor enabled anyone at the
+# machine can append init=/bin/sh to the kernel command line and get a root
+# shell inside the verified image. It also lets them strip the roothash.
+
+# --- boot counting ------------------------------------------------------------
+
+cmd_bless() {
+  need_root
+  # systemd-bless-boot does the rename; we mirror the result into our own state
+  # so `steelctl history` can report it without parsing ESP filenames.
+  if command -v systemd-bless-boot >/dev/null; then
+    systemd-bless-boot good
+  else
+    local slot
+    slot=$(active_slot)
+    local counted
+    counted=$(compgen -G "$ENTRY_DIR/steelos-$slot+*.efi" || true)
+    [[ -n $counted ]] && mv "$counted" "$ENTRY_DIR/steelos-$slot.efi"
+  fi
+
+  local slot
+  slot=$(active_slot)
+  local record="$STATE/slots/$slot/generation"
+  if [[ -f $record ]]; then
+    sed -i 's/^blessed=.*/blessed=yes/' "$record"
+    grep -q '^blessed=' "$record" || printf 'blessed=yes\n' >> "$record"
+  fi
+  note "this deployment is blessed; it will not be demoted"
+}
+
+cmd_status() {
+  local active
+  active=$(cat "$STATE/active-slot" 2>/dev/null || echo "unknown")
+  echo "active slot:   $active"
+  echo
+  echo "ESP entries:"
+  if compgen -G "$ENTRY_DIR/*.efi" >/dev/null; then
+    for entry in "$ENTRY_DIR"/*.efi; do
+      local name counter
+      name=$(basename "$entry")
+      if [[ $name =~ \+([0-9]+)(-([0-9]+))?\.efi$ ]]; then
+        counter="${BASH_REMATCH[1]} tries left, ${BASH_REMATCH[3]:-0} done"
+        printf '  %-32s %s\n' "$name" "$counter"
+      else
+        printf '  %-32s blessed\n' "$name"
+      fi
+    done
+  else
+    echo "  (none — this machine has no bootable deployment)"
+  fi
+  echo
+  echo "A counted entry has not yet booted successfully. If it never reaches"
+  echo "boot-complete.target, the counter runs out and the other slot boots."
+}
+
+# --- recovery and maintenance entries -----------------------------------------
+
+cmd_install_recovery() {
+  need_root
+  local uki=${1:?usage: steel-boot install-recovery <uki-path>}
+  [[ -f $uki ]] || die "$uki does not exist"
+  mkdir -p "$ENTRY_DIR"
+  # No boot counter: the recovery entry must never be demoted. It is the last
+  # thing standing between a user and reinstalling.
+  cp "$uki" "$ENTRY_DIR/steelos-recovery.efi.tmp"
+  sync
+  mv "$ENTRY_DIR/steelos-recovery.efi.tmp" "$ENTRY_DIR/steelos-recovery.efi"
+  note "recovery entry installed"
+}
+
+cmd_install_maintenance() {
+  need_root
+  local uki=${1:?usage: steel-boot install-maintenance <uki-path>}
+  [[ -f $uki ]] || die "$uki does not exist"
+  mkdir -p "$ENTRY_DIR"
+  cp "$uki" "$ENTRY_DIR/steelos-maintenance.efi.tmp"
+  sync
+  mv "$ENTRY_DIR/steelos-maintenance.efi.tmp" "$ENTRY_DIR/steelos-maintenance.efi"
+  note "maintenance entry installed"
+  note
+  note "This entry exists on EVERY SteelOS install, decoy or not. On machines"
+  note "without a decoy it does real work — staging updates, running backups,"
+  note "scrubbing filesystem state — so its presence proves nothing about how"
+  note "this machine is configured. That is the point; see docs/deniability."
+}
+
+# --- TPM ----------------------------------------------------------------------
+
+cmd_enroll_tpm() {
+  need_root
+  local device=${1:?usage: steel-boot enroll-tpm <luks-device>}
+  command -v systemd-cryptenroll >/dev/null || die "systemd-cryptenroll not found"
+
+  cat <<'MSG'
+
+steel-boot: enrolling TPM2 unlock.
+
+  A PIN is MANDATORY and this command will not proceed without one. A
+  TPM-sealed key with no PIN unlocks for whoever is holding the machine,
+  which turns full-disk encryption into a speed bump against exactly the
+  attacker it is supposed to stop.
+
+  Binding to PCR 7 (Secure Boot state) and PCR 11 (the UKI measurement).
+  Pulling the drive and reading it elsewhere yields ciphertext; swapping in
+  a tampered OS to capture your passphrase changes the measurements and the
+  TPM refuses to release the key.
+
+  KNOWN CONSEQUENCE: a firmware update invalidates PCR 7 and auto-unlock
+  stops working. That is not a bug and it is not preventable. Your recovery
+  key still works, and `steel-boot reseal` re-seals against the new
+  measurements. Make sure you have the recovery key BEFORE you continue.
+
+MSG
+  read -r -p "Do you have your recovery key to hand? [type 'yes'] " confirm
+  [[ $confirm == yes ]] || die "aborted — find the recovery key first"
+
+  systemd-cryptenroll "$device" \
+    --tpm2-device=auto \
+    --tpm2-with-pin=yes \
+    --tpm2-pcrs=7+11
+
+  mkdir -p "$STATE/boot"
+  cat > "$STATE/boot/tpm-enrollment" <<EOF
+# Written by steel-boot. steel-check reads this to verify the enrollment shape.
+device=$device
+with-pin=yes
+pcrs=7+11
+EOF
+  note "enrolled; verify with 'steel-check boot.tpm-binding'"
+}
+
+cmd_reseal() {
+  need_root
+  local device=${1:?usage: steel-boot reseal <luks-device>}
+  cat <<'MSG'
+
+steel-boot: re-sealing the TPM binding.
+
+  Do this after a firmware update, or after any change that alters the
+  Secure Boot state. The old sealed key is wiped first, so if this fails
+  part-way you will need the recovery key for the next boot — which is why
+  the tool asks about it rather than assuming.
+
+MSG
+  read -r -p "Recovery key to hand? [type 'yes'] " confirm
+  [[ $confirm == yes ]] || die "aborted"
+
+  systemd-cryptenroll "$device" --wipe-slot=tpm2
+  cmd_enroll_tpm "$device"
+}
+
+# --- UKI rebuild --------------------------------------------------------------
+
+cmd_rebuild_uki() {
+  need_root
+  # On an image deployment the UKI comes from CI, already signed and already
+  # containing the correct root hash. Rebuilding locally would produce one
+  # signed by a local key — or not signed at all — and it would carry whatever
+  # root hash the local tooling computed, which is precisely the thing the
+  # signature is supposed to pin.
+  die "UKIs are built and signed in CI, not on the machine.
+
+     The UKI's command line contains the dm-verity root hash, so building one
+     here would mean asserting a root hash this machine chose. That is the
+     exact substitution the signature exists to prevent.
+
+     To change kernel parameters: edit the manifest, run 'steelctl apply', and
+     take the resulting image with 'steelctl update'.
+
+     To build your own images: see docs/custom-images.md, which covers
+     enrolling your own build key. That should be a deliberate decision, not
+     something a repair command does quietly."
+}
+
+usage() {
+  cat <<'EOF'
+steel-boot — UKI installation, slot activation, boot counting, TPM sealing
+
+USAGE:
+    steel-boot <command> [args]
+
+COMMANDS:
+    status                        Slots, entries, and boot counters
+    stage <uki> [slot]            Install a signed UKI into the inactive slot
+    activate <slot>               Make a slot the default at next boot
+    bless                         Mark this deployment as having booted well
+    install-recovery <uki>        Install the recovery entry (never counted)
+    install-maintenance <uki>     Install the maintenance entry
+    enroll-tpm <device>           TPM2 + PIN unlock, bound to PCR 7 and 11
+    reseal <device>               Re-seal after a firmware update
+
+BOOT COUNTING:
+    A staged entry gets 3 attempts. systemd-boot decrements the counter on
+    each try; systemd-bless-boot clears it once boot-complete.target is
+    reached. An entry that runs out is skipped and the other slot boots.
+
+    This is what makes a bad update survivable with nobody present — which
+    matters because a machine that boots to a black screen cannot show you a
+    menu or run a rollback command.
+EOF
+}
+
+case ${1:-} in
+  status)              shift; cmd_status "$@" ;;
+  stage)               shift; cmd_stage "$@" ;;
+  activate)            shift; cmd_activate "$@" ;;
+  bless)               shift; cmd_bless "$@" ;;
+  install-recovery)    shift; cmd_install_recovery "$@" ;;
+  install-maintenance) shift; cmd_install_maintenance "$@" ;;
+  enroll-tpm)          shift; cmd_enroll_tpm "$@" ;;
+  reseal)              shift; cmd_reseal "$@" ;;
+  rebuild-uki)         shift; cmd_rebuild_uki "$@" ;;
+  -h|--help|help|"")   usage ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac
