@@ -1,29 +1,75 @@
 post_install() {
+  # Profiles ship in COMPLAIN mode. Enforcing a profile that has never seen the
+  # program run on this machine's hardware will deny something it needs — a
+  # graphics path, a font directory, a codec — and a browser that will not start
+  # is how people learn to disable AppArmor entirely.
+  #
+  # `steel-profile status` names anything left in complain mode, and steel-check
+  # reports it as a warning, so this is a starting state rather than a resting
+  # one.
+  if command -v aa-complain >/dev/null; then
+    for profile in /etc/apparmor.d/usr.bin.firefox \
+                   /etc/apparmor.d/usr.bin.steel-shell \
+                   /etc/apparmor.d/usr.lib.steelos.captive-portal-helper; do
+      [ -f "$profile" ] && aa-complain "$profile" >/dev/null 2>&1 || true
+    done
+  fi
+
   cat <<'MSG'
 
-steel-apparmor: AppArmor is NOT active until the kernel is told to enable it.
+steel-apparmor: two things to do.
 
-  Arch builds AppArmor into the kernel but does not select it, so installing
-  the package alone changes nothing. Add this to your kernel command line and
-  reboot:
+1. AppArmor is NOT active until the kernel is told to enable it.
 
-      lsm=landlock,lockdown,yama,integrity,apparmor apparmor=1 security=apparmor
+   Arch builds AppArmor into the kernel but does not select it, so
+   installing the package alone changes nothing. Add this to your kernel
+   command line and reboot:
 
-  The full fragment is at /usr/share/steel-apparmor/cmdline. Note that the
-  lsm= list must be complete — naming only apparmor silently disables
-  landlock, lockdown, yama, and integrity.
+       lsm=landlock,lockdown,yama,integrity,apparmor apparmor=1 security=apparmor
 
-  On an image deployment this is baked into the signed UKI and you do not
-  have to do anything.
+   The full fragment is at /usr/share/steel-apparmor/cmdline. The lsm= list
+   must be complete — naming only apparmor silently disables landlock,
+   lockdown, yama, and integrity.
 
-  Then:
+   On an image deployment this is baked into the signed UKI and you do not
+   have to do anything.
 
-      systemctl enable --now apparmor.service
-      steel-profile status
+       systemctl enable --now apparmor.service
+
+2. The shipped profiles are in COMPLAIN mode.
+
+   Complain logs violations and permits them, so nothing is confined yet.
+   Use each program normally for a few days, then:
+
+       steel-profile refine /usr/lib/firefox/firefox
+       steel-profile enforce /usr/lib/firefox/firefox
+
+   `steel-profile status` lists anything still in complain mode, and
+   `steel-check sandbox.apparmor-enforcing` reports it as a warning.
 
 MSG
 }
 
 post_upgrade() {
-  systemctl is-active --quiet apparmor.service && systemctl reload apparmor.service || true
+  # Reload rather than restart: restarting drops all profiles briefly, and a
+  # window with no confinement during an unattended update is worth avoiding.
+  if systemctl is-active --quiet apparmor.service; then
+    systemctl reload apparmor.service || true
+  fi
+}
+
+pre_remove() {
+  cat <<'MSG'
+
+steel-apparmor: removing this package leaves the profiles in /etc/apparmor.d.
+
+  They are marked as config files, so pacman keeps your edits. To remove
+  them and stop confining these programs:
+
+      rm /etc/apparmor.d/usr.bin.firefox
+      rm /etc/apparmor.d/usr.bin.steel-shell
+      rm /etc/apparmor.d/usr.lib.steelos.captive-portal-helper
+      systemctl reload apparmor.service
+
+MSG
 }

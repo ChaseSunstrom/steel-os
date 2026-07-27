@@ -1,0 +1,36 @@
+# AppArmor profile: the steel-shell wrapper.
+#
+# Confining the wrapper, not the container. What runs *inside* steel-shell is
+# deliberately unconfined by AppArmor — the whole point of that container is
+# that pacman works normally inside it — and the isolation there comes from the
+# user namespace and the container's own mount namespace.
+#
+# What this profile stops is the wrapper being turned into a way to reach parts
+# of the host it has no business touching.
+
+abi <abi/3.0>,
+include <tunables/global>
+
+profile steel-shell /usr/bin/steel-shell {
+  include <abstractions/base>
+  include <abstractions/bash>
+  include <abstractions/nameservice>
+
+  /usr/bin/steel-shell r,
+  /usr/bin/podman PUx,
+  /usr/bin/bash rix,
+  /usr/bin/basename rix,
+  /usr/bin/id rix,
+
+  owner @{HOME}/** rw,
+  owner @{HOME}/.local/share/containers/** rwk,
+
+  # The wrapper has no business reading the deployment state or the keys that
+  # protect it, even though the user running it may have permission to.
+  deny /var/lib/steelos/backup/** rwx,
+  deny @{HOME}/.gnupg/** rwx,
+  deny @{HOME}/.ssh/id_* rwx,
+
+  @{PROC}/@{pid}/** r,
+  /dev/urandom r,
+}

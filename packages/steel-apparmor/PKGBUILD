@@ -11,12 +11,32 @@ optdepends=(
   'audit: richer denial logs, which make profile authoring much less painful'
   'steel-check: report profiles left in complain mode'
 )
-source=('src/steel-profile' 'src/apparmor-cmdline')
-sha256sums=('SKIP' 'SKIP')
+source=(
+  'src/steel-profile'
+  'src/apparmor-cmdline'
+  'src/profiles/usr.bin.firefox'
+  'src/profiles/usr.bin.steel-shell'
+  'src/profiles/usr.lib.steelos.captive-portal-helper'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+backup=(
+  'etc/apparmor.d/usr.bin.firefox'
+  'etc/apparmor.d/usr.bin.steel-shell'
+  'etc/apparmor.d/usr.lib.steelos.captive-portal-helper'
+)
 
 install=steel-apparmor.install
 
 package() {
   install -Dm755 "$srcdir/steel-profile" "$pkgdir/usr/bin/steel-profile"
   install -Dm644 "$srcdir/apparmor-cmdline" "$pkgdir/usr/share/$pkgname/cmdline"
+
+  # Profiles are installed in COMPLAIN mode by the .install scriptlet, not
+  # enforcing. A profile that has never seen the program run on this machine's
+  # hardware will deny something it needs, and a browser that will not start is
+  # how people learn to disable AppArmor entirely.
+  for profile in usr.bin.firefox usr.bin.steel-shell usr.lib.steelos.captive-portal-helper; do
+    install -Dm644 "$srcdir/$profile" "$pkgdir/etc/apparmor.d/$profile"
+  done
 }

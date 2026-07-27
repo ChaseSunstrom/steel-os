@@ -1,0 +1,25 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-identity
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS compartmentalisation: systemd-homed profiles, per-profile sandbox policy, optional user-scope Nix"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('systemd' 'bash')
+optdepends=(
+  'flatpak: per-profile application permissions'
+  'bubblewrap: required by steel-nix for the store bind mount'
+  'steel-check: verify every profile is encrypted at rest'
+)
+source=('src/steel-profile-manager' 'src/steel-nix')
+sha256sums=('SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/steel-profile-manager" "$pkgdir/usr/bin/steel-profile-manager"
+  install -Dm755 "$srcdir/steel-nix" "$pkgdir/usr/bin/steel-nix"
+  # /nix as an empty mount point in the image. It has to exist on the read-only
+  # root for the per-user bind mount to have somewhere to land, and creating it
+  # at runtime is impossible by construction.
+  install -dm755 "$pkgdir/nix"
+}

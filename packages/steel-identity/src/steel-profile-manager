@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+#
+# steel-profile-manager — create and manage compartmentalised user profiles.
+#
+# A "profile" is not a bespoke concept. It is a systemd-homed user with LUKS
+# storage, a sandbox strictness setting, and its own backup configuration. Being
+# ordinary users is the point: every existing tool — sudo, loginctl, Plasma's
+# fast user switching, homectl — works on them without knowing anything about
+# SteelOS.
+#
+# What this buys, precisely: user B, even as root, cannot read user A's data at
+# rest. Each home is an independently encrypted LUKS image, unlocked at login
+# and locked at logout and on suspend.
+#
+# What it does NOT buy, and the docs must keep saying so: profiles share one
+# kernel. A kernel exploit crosses between them. This defends against data
+# leakage and application compromise, not against a kernel 0-day. Qubes is the
+# answer if that is the requirement, and its authors concluded it needs VMs.
+
+set -euo pipefail
+
+die() { printf 'steel-profile-manager: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-profile-manager: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+command -v homectl >/dev/null || die "systemd-homed is not available"
+
+# Sandbox strictness per profile. These map onto Flatpak overrides applied to
+# that user's installation, so an "untrusted" profile starts from less than the
+# system default rather than the same.
+apply_sandbox_policy() {
+  local user=$1 level=$2
+  local home
+  home=$(getent passwd "$user" | cut -d: -f6)
+  local overrides="$home/.local/share/flatpak/overrides"
+
+  install -dm700 -o "$user" -g "$user" "$overrides"
+
+  case $level in
+    balanced)
+      # The system default: home, host, devices, X11 and network revoked
+      # globally, granted back per app.
+      install -m600 -o "$user" -g "$user" \
+        /var/lib/flatpak/overrides/global "$overrides/global"
+      ;;
+    strict)
+      # Additionally: no inter-app communication, no printing, no location.
+      # An app in a strict profile that needs any of these has to be granted
+      # it explicitly, which is a decision someone makes rather than a default.
+      {
+        cat /var/lib/flatpak/overrides/global
+        cat <<'EOF'
+
+# steel-profile-manager: strict profile additions
+[Session Bus Policy]
+org.freedesktop.secrets=none
+org.gnome.evolution.dataserver.Sources5=none
+
+[System Bus Policy]
+org.freedesktop.GeoClue2=none
+org.cups.cupsd=none
+EOF
+      } > "$overrides/global"
+      chown "$user:$user" "$overrides/global"
+      chmod 600 "$overrides/global"
+      ;;
+    permissive)
+      note "WARNING: profile '$user' is permissive — Flatpak defaults apply,"
+      note "which for many popular applications includes full home access."
+      : > "$overrides/global"
+      chown "$user:$user" "$overrides/global"
+      ;;
+    *) die "unknown sandbox level: $level (expected balanced, strict, or permissive)" ;;
+  esac
+  note "sandbox policy '$level' applied to $user"
+}
+
+cmd_create() {
+  need_root
+  local user=${1:?usage: steel-profile-manager create <name> [--sandbox LEVEL] [--size SIZE]}
+  shift
+  local sandbox=balanced size=""
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --sandbox) sandbox=${2:?}; shift 2 ;;
+      --size)    size=${2:?}; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  getent passwd "$user" >/dev/null && die "user $user already exists"
+
+  # CLAUDE.md gotcha 8: homed homes do not shrink easily, so the size chosen
+  # here matters more than users will expect. Say so at the moment of the
+  # decision rather than in documentation they will read afterwards.
+  if [[ -z $size ]]; then
+    cat <<'MSG'
+
+  Home size: systemd-homed allocates a LUKS image of a fixed size. Growing one
+  later is straightforward; SHRINKING one is not, and needs free space and a
+  logged-out user. Pick generously.
+
+MSG
+    read -r -p "  Size (e.g. 100G, or press enter for 50% of free space): " size
+  fi
+
+  local args=(--storage=luks)
+  [[ -n $size ]] && args+=("--disk-size=$size")
+
+  note "creating $user (this prompts for their password twice)"
+  homectl create "$user" "${args[@]}" \
+    --shell=/bin/bash \
+    --member-of=wheel
+
+  apply_sandbox_policy "$user" "$sandbox"
+
+  mkdir -p /var/lib/steelos/profiles
+  cat > "/var/lib/steelos/profiles/$user" <<EOF
+# Written by steel-profile-manager.
+user=$user
+storage=luks
+sandbox=$sandbox
+EOF
+
+  cat <<MSG
+
+  Profile '$user' created.
+
+  What this gives you:
+    * An independently encrypted home. Other users, including root, cannot
+      read it at rest.
+    * Its own Flatpak installation and permissions ($sandbox).
+    * Its own backup configuration — run 'steel-backup setup' as $user.
+
+  What it does NOT give you:
+    * Isolation from a kernel exploit. Profiles share one kernel, and an
+      exploit in it crosses between them. This defends against data leakage
+      and application compromise, not against a kernel 0-day.
+
+  Switch between profiles with Plasma's fast user switching; they are
+  ordinary users, so everything that works on users works on them.
+
+MSG
+}
+
+cmd_list() {
+  printf '%-16s %-10s %-12s %s\n' "PROFILE" "STORAGE" "SANDBOX" "STATE"
+  for record in /var/lib/steelos/profiles/*; do
+    [[ -f $record ]] || continue
+    local user sandbox state
+    user=$(sed -n 's/^user=//p' "$record")
+    sandbox=$(sed -n 's/^sandbox=//p' "$record")
+    state=$(homectl inspect "$user" --json=short 2>/dev/null \
+            | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo unknown)
+    printf '%-16s %-10s %-12s %s\n' "$user" "luks" "$sandbox" "${state:-locked}"
+  done
+}
+
+cmd_sandbox() {
+  need_root
+  local user=${1:?usage: steel-profile-manager sandbox <user> <level>}
+  local level=${2:?expected balanced, strict, or permissive}
+  getent passwd "$user" >/dev/null || die "no such user: $user"
+  apply_sandbox_policy "$user" "$level"
+  sed -i "s/^sandbox=.*/sandbox=$level/" "/var/lib/steelos/profiles/$user" 2>/dev/null || true
+}
+
+cmd_verify_isolation() {
+  # The claim is "user B, even as root, cannot read user A's data at rest".
+  # This checks it rather than asserting it.
+  local failures=0
+  for record in /var/lib/steelos/profiles/*; do
+    [[ -f $record ]] || continue
+    local user
+    user=$(sed -n 's/^user=//p' "$record")
+    local inspect
+    inspect=$(homectl inspect "$user" 2>/dev/null || true)
+
+    if ! grep -qi 'luks' <<<"$inspect"; then
+      printf '  FAIL  %s is not LUKS-backed; its home is readable at rest\n' "$user"
+      failures=$((failures + 1))
+      continue
+    fi
+    # A locked home should not be readable. If the directory has content while
+    # the user is logged out, the home is not actually locked.
+    local home="/home/$user"
+    if [[ -d $home ]] && [[ -n $(ls -A "$home" 2>/dev/null) ]]; then
+      if ! loginctl list-sessions --no-legend 2>/dev/null | grep -q " $user "; then
+        printf '  WARN  %s is logged out but its home is still mounted\n' "$user"
+        printf '        run: homectl deactivate %s\n' "$user"
+      fi
+    fi
+    printf '  ok    %s is LUKS-backed\n' "$user"
+  done
+  (( failures == 0 )) || die "$failures profile(s) are not encrypted at rest"
+}
+
+usage() {
+  cat <<'EOF'
+steel-profile-manager — compartmentalised user profiles
+
+USAGE:
+    steel-profile-manager create <name> [--sandbox LEVEL] [--size SIZE]
+    steel-profile-manager list
+    steel-profile-manager sandbox <user> <balanced|strict|permissive>
+    steel-profile-manager verify-isolation
+
+WHAT A PROFILE IS:
+    An ordinary systemd-homed user with LUKS storage. Not a bespoke concept —
+    being ordinary users is why fast user switching, sudo, and every other
+    existing tool works on them.
+
+WHAT IT DEFENDS:
+    User B, even as root, cannot read user A's data at rest.
+
+WHAT IT DOES NOT DEFEND:
+    Profiles share one kernel. A kernel exploit crosses between them. If that
+    is your threat model, use Qubes — its authors concluded the answer needs
+    VMs, and they were right.
+
+SUGGESTED LAYOUT:
+    Personal    balanced
+    Work        balanced, its own backup target
+    Untrusted   strict, for anything you do not trust
+EOF
+}
+
+case ${1:-} in
+  create)           shift; cmd_create "$@" ;;
+  list)             shift; cmd_list "$@" ;;
+  sandbox)          shift; cmd_sandbox "$@" ;;
+  verify-isolation) shift; cmd_verify_isolation "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

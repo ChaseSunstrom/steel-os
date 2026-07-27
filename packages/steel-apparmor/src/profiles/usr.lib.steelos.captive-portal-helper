@@ -1,0 +1,39 @@
+# AppArmor profile: the captive portal helper.
+#
+# This one is worth confining carefully because of what it does: it drops DNS to
+# plaintext for a bounded window and opens a browser against a page controlled
+# by whoever runs the network. That is a deliberate, temporary reduction in
+# protection, and the code performing it should be able to do nothing else.
+
+abi <abi/3.0>,
+include <tunables/global>
+
+profile steel-captive-portal /usr/lib/steelos/captive-portal-helper {
+  include <abstractions/base>
+  include <abstractions/bash>
+  include <abstractions/nameservice>
+
+  /usr/lib/steelos/captive-portal-helper r,
+  /usr/bin/bash rix,
+  /usr/bin/resolvectl Px,
+  /usr/bin/nmcli Px,
+  /usr/bin/nm-online Px,
+  /usr/bin/logger Px,
+  /usr/bin/firefox Px,
+  /usr/bin/xdg-open Px,
+  /usr/bin/mktemp rix,
+  /usr/bin/date rix,
+  /usr/bin/rm rix,
+
+  # Its own run state, and nothing else under /run.
+  /run/steelos/portal/** rw,
+  owner /tmp/steel-portal-*/** rwk,
+
+  # It must not be able to touch the persistent DNS configuration. Its whole
+  # contract is a temporary, per-link change that is reverted unconditionally;
+  # a version of it that could edit resolved.conf.d could make the reduction
+  # permanent, which is the failure this design exists to prevent.
+  deny /etc/systemd/resolved.conf.d/** w,
+  deny /etc/systemd/resolved.conf w,
+  deny /var/lib/steelos/** rwx,
+}

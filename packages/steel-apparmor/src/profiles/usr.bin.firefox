@@ -1,0 +1,73 @@
+# AppArmor profile: Firefox.
+#
+# The browser is the most exposed process on a desktop: it executes untrusted
+# code from every site visited, by design. Flatpak is the preferred path and
+# gets the global permission overrides; this profile covers the native package,
+# where AppArmor is the only confinement.
+#
+# Written to be maintainable rather than maximal. A profile so tight that
+# Firefox breaks on the next release is a profile that gets set to complain mode
+# and left there, which confines nothing (see steel-profile status).
+
+abi <abi/3.0>,
+include <tunables/global>
+
+profile firefox /usr/lib/firefox/firefox flags=(attach_disconnected) {
+  include <abstractions/base>
+  include <abstractions/audio>
+  include <abstractions/dbus-session-strict>
+  include <abstractions/fonts>
+  include <abstractions/nameservice>
+  include <abstractions/opencl>
+  include <abstractions/wayland>
+
+  # No X11. Any X client can read every other client's keystrokes, so handing
+  # it to a browser gives a compromised tab a system-wide keylogger.
+  deny /tmp/.X11-unix/* rw,
+  deny @{HOME}/.Xauthority r,
+
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+  # No raw sockets: nothing a browser does needs them, and they are a
+  # capability worth denying explicitly rather than by omission.
+  deny network raw,
+  deny network packet,
+
+  /usr/lib/firefox/** r,
+  /usr/lib/firefox/firefox ix,
+  /usr/lib/firefox/*.so mr,
+
+  owner @{HOME}/.mozilla/** rwk,
+  owner @{HOME}/.cache/mozilla/** rwk,
+
+  # Downloads, and nothing else in $HOME. File uploads go through the XDG
+  # portal, which grants the one file the user picked at the moment they
+  # picked it — the browser never needs to enumerate the home directory.
+  owner @{HOME}/Downloads/** rw,
+
+  # The denials that matter. Explicit rather than implicit so that a future
+  # edit widening the profile has to remove a line someone wrote on purpose.
+  deny @{HOME}/.ssh/** rwx,
+  deny @{HOME}/.gnupg/** rwx,
+  deny @{HOME}/.password-store/** rwx,
+  deny @{HOME}/.config/steelos/** rwx,
+  deny @{HOME}/.local/share/keyrings/** rwx,
+  deny /var/lib/steelos/** rwx,
+  deny /etc/steelos/** rwx,
+
+  owner /tmp/** rwk,
+  /dev/shm/** rwk,
+  /dev/dri/* rw,
+  /dev/urandom r,
+
+  @{PROC}/@{pid}/** r,
+  # No reading other processes: /proc leaks command lines, which sometimes
+  # carry secrets, and it is a reconnaissance step in every escalation chain.
+  deny @{PROC}/[0-9]*/** r,
+
+  /usr/bin/xdg-open Pxr,
+  /usr/lib/firefox/glxtest Px,
+  /usr/lib/firefox/vaapitest Px,
+}

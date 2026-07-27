@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+#
+# steel-nix — optional, user-scope Nix.
+#
+# CLAUDE.md is explicit that we do not deliver NixOS semantics: Arch packages
+# are not content-addressed and do not compose that way. But some users
+# genuinely want functional package management, and the honest answer is to ship
+# the real thing in user scope rather than to imitate it badly.
+#
+# Single-user mode on /var. No daemon, no multi-user store, no interference with
+# the verified root — because /nix cannot exist on a read-only /usr, the store
+# lives at /var/lib/steelos/nix and is bind-mounted to /nix per user session.
+#
+# This is how SteelOS can offer Nix semantics to the people who want them
+# without claiming to be NixOS to everyone else.
+
+set -euo pipefail
+
+STORE=${STEEL_NIX_STORE:-/var/lib/steelos/nix}
+
+die() { printf 'steel-nix: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-nix: %s\n' "$*"; }
+
+cmd_enable() {
+  [[ ${EUID:-$(id -u)} -ne 0 ]] || die "run as your own user, not root — this is single-user Nix"
+
+  cat <<'MSG'
+
+steel-nix: setting up single-user Nix.
+
+  Where things go, and why:
+
+    /var/lib/steelos/nix    the store. /nix cannot exist on a read-only /usr,
+                            and putting the store on the verified root would
+                            defeat the point of both.
+
+    ~/.nix-profile          your profile, as usual.
+
+  What this is NOT: this does not make SteelOS into NixOS. The operating
+  system is still image-based, still rebuilt from a manifest, still rolled
+  back whole. Nix here manages *your* packages, in your home, with real
+  functional package management semantics — which is the honest way to offer
+  them.
+
+MSG
+
+  mkdir -p "$STORE"
+
+  # The bind mount is what makes /nix exist without writing to the verified
+  # root. A systemd user unit rather than fstab: it is per-user, and it should
+  # not exist for users who never asked for Nix.
+  local unit="$HOME/.config/systemd/user/steel-nix-store.service"
+  mkdir -p "$(dirname "$unit")"
+  cat > "$unit" <<EOF
+[Unit]
+Description=Bind the SteelOS Nix store to /nix
+Documentation=https://github.com/ChaseSunstrom/steel-os
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# /nix must exist as a mount point on the read-only root; the image ships an
+# empty directory for exactly this, so nothing here writes to /usr.
+ExecStart=/usr/bin/bwrap --bind $STORE /nix --dev-bind / / true
+
+[Install]
+WantedBy=default.target
+EOF
+
+  note "wrote $unit"
+  note "install Nix itself with the upstream single-user installer:"
+  note "  sh <(curl -L https://nixos.org/nix/install) --no-daemon"
+  note
+  note "Then: systemctl --user enable --now steel-nix-store.service"
+}
+
+cmd_status() {
+  if [[ -d $STORE ]]; then
+    echo "store:    $STORE ($(du -sh "$STORE" 2>/dev/null | cut -f1))"
+  else
+    echo "store:    not created"
+  fi
+  command -v nix >/dev/null && echo "nix:      $(nix --version)" || echo "nix:      not installed"
+  echo
+  echo "This is user-scope Nix. The operating system is still image-based and"
+  echo "still rolled back whole; Nix manages your packages, not the system."
+}
+
+usage() {
+  cat <<'EOF'
+steel-nix — optional user-scope Nix
+
+USAGE:
+    steel-nix enable     Prepare the store and the bind mount
+    steel-nix status
+
+WHY THIS EXISTS:
+    Some people genuinely want functional package management. SteelOS does
+    not provide NixOS semantics — Arch packages are not content-addressed
+    and do not compose that way — so the honest answer is to ship the real
+    thing in user scope rather than imitate it.
+
+    The operating system remains image-based. Nix manages your packages.
+EOF
+}
+
+case ${1:-} in
+  enable) shift; cmd_enable "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1" ;;
+esac
