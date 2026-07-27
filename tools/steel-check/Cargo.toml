@@ -1,0 +1,22 @@
+[package]
+name = "steel-check"
+description = "Audits a SteelOS system against every hardening measure it claims to implement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately zero dependencies.
+#
+# steel-check is the tool that decides whether a system is trustworthy, and it
+# has to run in the recovery UKI, where the smallest possible closure matters.
+# A dependency tree is an attack surface on the auditor itself, so JSON
+# emission and argument parsing are hand-rolled and unit-tested rather than
+# pulled in. If this ever needs a dependency, that is a decision to argue for in
+# a commit message, not a convenience.
+[dependencies]
+
+[[bin]]
+name = "steel-check"
+path = "src/main.rs"

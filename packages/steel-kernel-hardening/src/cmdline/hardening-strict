@@ -1,0 +1,13 @@
+# Strict-preset additions to the kernel command line.
+#
+# oops=panic turns a kernel oops into a halt. This is a deliberate
+# availability-for-security trade: many exploitation techniques oops on the way
+# to succeeding, and an attacker who can retry gets to iterate. It also means a
+# driver bug takes the machine down instead of logging, which is why it is not
+# in the baseline.
+#
+# ia32_emulation=0 removes the 32-bit syscall entry point (Linux 6.7+). It
+# breaks 32-bit binaries, which on a desktop mostly means older games and Wine
+# prefixes.
+
+oops=panic ia32_emulation=0

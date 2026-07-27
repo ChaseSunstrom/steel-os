@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# makepkg build artefacts
+packages/*/pkg/
+packages/*/src/*.tar.*
+packages/*/*.pkg.tar.*
+packages/*/*.log
+
+# Image build output
+/image/out/
+/image/cache/
+*.raw
+*.efi
+*.verity
+
+# Never commit key material. The repo ships public keys and nothing else.
+*.key
+*.pem
+!**/*.pub
+sbctl-keys/
+secring.*

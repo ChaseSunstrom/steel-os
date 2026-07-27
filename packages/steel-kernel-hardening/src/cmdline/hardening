@@ -1,0 +1,29 @@
+# SteelOS kernel command-line hardening fragment.
+#
+# Paired with CMDLINE_BASELINE in tools/steel-check/src/checks/kernel.rs; a unit
+# test fails the build if they drift apart.
+#
+# On an image deployment these parameters live inside the signed UKI, so they
+# cannot be edited without invalidating the signature. On a plain-Arch install
+# (Phase 0) this file is documentation: append it to your bootloader entry by
+# hand. steel-check reports the difference as a warning rather than a failure,
+# because the package cannot apply it for you.
+#
+# Deliberately NOT included here, and why:
+#
+#   lockdown=confidentiality    Applied by steel-boot on image deployments. On a
+#                               mutable Arch install it breaks hibernation and
+#                               any locally-built module, so it is opt-in via
+#                               `steel-harden lockdown on`.
+#   module.sig_enforce=1        Only safe once modules are built and signed at
+#                               image build time. Setting it on a DKMS system
+#                               makes the machine unbootable after the next
+#                               kernel update.
+#   mitigations=auto,nosmt      Costs roughly a third of the machine's
+#                               throughput. `steel-harden smt off` for users who
+#                               want it.
+#   intel_iommu=on / amd_iommu  Vendor-specific; steel-boot picks the right one
+#                               from the detected CPU.
+
+slab_nomerge init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1
+randomize_kstack_offset=on vsyscall=none debugfs=off mitigations=auto
