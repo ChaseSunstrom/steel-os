@@ -284,47 +284,80 @@ fn check_captive_portal(ctx: &Context) -> Outcome {
     }
 }
 
+/// Values of `*.cloned-mac-address` that break the link between the hardware
+/// address and what is broadcast.
+///
+/// `stable` derives a per-network address that persists, so the network sees a
+/// consistent device — captive portal logins and MAC-based authentication keep
+/// working — while different networks cannot correlate you. `random` re-rolls
+/// on every connection, which is stronger and breaks both of those.
+///
+/// Both are accepted. `permanent` and an explicit hardware address are not:
+/// those broadcast the identifier this measure exists to hide.
+const RANDOMISED_MAC_MODES: &[&str] = &["random", "stable"];
+
+fn mac_mode(nm: &str, key: &str) -> Option<String> {
+    nm.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.strip_prefix(key))
+        .filter_map(|l| l.strip_prefix('='))
+        .map(|v| v.trim().to_string())
+        // Last wins: drop-ins are read in order.
+        .next_back()
+}
+
 fn check_mac_randomization(ctx: &Context) -> Outcome {
     let nm = ctx.sys.concat_dir("/etc/NetworkManager/conf.d", ".conf");
 
-    let scan_random = nm.contains("wifi.scan-rand-mac-address=yes")
-        || !nm.contains("wifi.scan-rand-mac-address=no");
-    let wifi_cloned = nm
-        .lines()
-        .any(|l| l.trim().starts_with("wifi.cloned-mac-address=") && l.contains("random"));
-    let eth_cloned = nm
-        .lines()
-        .any(|l| l.trim().starts_with("ethernet.cloned-mac-address=") && l.contains("random"));
+    // Scan randomisation defaults to on in NetworkManager, so its absence from
+    // the config is not a finding — an explicit `no` is.
+    let scan_mode = mac_mode(&nm, "wifi.scan-rand-mac-address");
+    let scan_ok = scan_mode.as_deref() != Some("no");
+
+    let wifi = mac_mode(&nm, "wifi.cloned-mac-address");
+    let eth = mac_mode(&nm, "ethernet.cloned-mac-address");
+
+    let randomised = |v: &Option<String>| {
+        v.as_deref()
+            .map(|m| RANDOMISED_MAC_MODES.contains(&m))
+            .unwrap_or(false)
+    };
 
     let mut missing = Vec::new();
-    if !wifi_cloned {
-        missing.push("wifi.cloned-mac-address=random");
+    if !randomised(&wifi) {
+        missing.push(format!(
+            "wifi.cloned-mac-address is {} (want random or stable)",
+            wifi.as_deref().unwrap_or("unset")
+        ));
     }
-    if !eth_cloned {
-        missing.push("ethernet.cloned-mac-address=random");
+    if !randomised(&eth) {
+        missing.push(format!(
+            "ethernet.cloned-mac-address is {} (want random or stable)",
+            eth.as_deref().unwrap_or("unset")
+        ));
     }
-    if !scan_random {
-        missing.push("wifi.scan-rand-mac-address=yes");
+    if !scan_ok {
+        missing.push("wifi.scan-rand-mac-address is disabled".to_string());
     }
 
     if missing.is_empty() {
-        Outcome::pass("scan and connection MAC addresses are randomised")
+        let mode = wifi.as_deref().unwrap_or("stable");
+        Outcome::pass(format!("scan randomised, connections use {mode} addresses"))
     } else if missing.len() == 3 {
         Outcome::fail("MAC randomisation is not configured")
             .evidence(
-                "The hardware address is broadcast to every network in range and is \
-                       a stable identifier for the device across all of them.",
+                "The hardware address is broadcast to every network in range and is a \
+                 stable identifier for the device across all of them.",
             )
             .remedy("pacman -S steel-network.")
     } else {
-        Outcome::warn(format!(
-            "MAC randomisation is partial: missing {}",
-            missing.join(", ")
-        ))
-        .remedy(
-            "pacman -S steel-network, or add the missing keys to \
-                     /etc/NetworkManager/conf.d/.",
-        )
+        Outcome::warn("MAC randomisation is partial")
+            .evidence_all(missing)
+            .remedy(
+                "pacman -S steel-network, or add the missing keys to \
+                 /etc/NetworkManager/conf.d/.",
+            )
     }
 }
 
@@ -358,6 +391,37 @@ table inet filter {
         // that would report a correctly-configured firewall as absent.
         let wrapped = "\ttable inet filter {\n\t\tchain input {\n\t\t\ttype filter hook input priority filter;\n\t\t\tpolicy drop;\n";
         assert!(hook_policy_is_drop(wrapped, "input"));
+    }
+
+    #[test]
+    fn stable_and_random_both_count_as_randomised_but_permanent_does_not() {
+        // `stable` gives a per-network address: different networks cannot
+        // correlate the device, but captive portals and MAC-based auth still
+        // work. Rejecting it would fail our own shipped default.
+        let conf =
+            "[connection]\nwifi.cloned-mac-address=stable\nethernet.cloned-mac-address=stable\n";
+        assert_eq!(
+            mac_mode(conf, "wifi.cloned-mac-address").as_deref(),
+            Some("stable")
+        );
+        assert!(RANDOMISED_MAC_MODES.contains(&"stable"));
+        assert!(RANDOMISED_MAC_MODES.contains(&"random"));
+        assert!(!RANDOMISED_MAC_MODES.contains(&"permanent"));
+    }
+
+    #[test]
+    fn later_dropins_override_earlier_ones() {
+        let conf = "wifi.cloned-mac-address=stable\nwifi.cloned-mac-address=permanent\n";
+        assert_eq!(
+            mac_mode(conf, "wifi.cloned-mac-address").as_deref(),
+            Some("permanent")
+        );
+    }
+
+    #[test]
+    fn commented_out_settings_are_ignored() {
+        let conf = "#wifi.cloned-mac-address=random\n";
+        assert_eq!(mac_mode(conf, "wifi.cloned-mac-address"), None);
     }
 
     #[test]

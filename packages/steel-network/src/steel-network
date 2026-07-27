@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+#
+# steel-network — apply and adjust the SteelOS network policy.
+#
+# Principle 6 again: every measure needs a discoverable off-switch, or people
+# disable the whole layer instead of the one rule that is in their way.
+
+set -euo pipefail
+
+NFT_MAIN=${STEEL_NFT_MAIN:-/etc/nftables.conf}
+NFT_LOCAL_DIR=${STEEL_NFT_LOCAL_DIR:-/etc/nftables.d}
+RESOLVED_DIR=${STEEL_RESOLVED_DIR:-/etc/systemd/resolved.conf.d}
+NM_DIR=${STEEL_NM_DIR:-/etc/NetworkManager/conf.d}
+
+die() { printf 'steel-network: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-network: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+cmd_apply() {
+  need_root
+  # Validate before loading. `nft -f` applies rules as it parses them, so a
+  # syntax error halfway through leaves a half-loaded ruleset — which on a
+  # default-drop policy means no network and no obvious way back.
+  nft --check --file "$NFT_MAIN" || die "ruleset failed validation; nothing was applied"
+  nft --file "$NFT_MAIN"
+  systemctl enable --now nftables.service
+  note "ruleset applied and enabled at boot"
+}
+
+cmd_allow() {
+  need_root
+  local spec=${1:?usage: steel-network allow <port>[/tcp|/udp] [comment]}
+  local comment=${2:-"added by steel-network allow"}
+  local port=${spec%%/*}
+  local proto=${spec##*/}
+  [[ $proto == "$spec" ]] && proto=tcp
+  [[ $proto == tcp || $proto == udp ]] || die "protocol must be tcp or udp"
+  [[ $port =~ ^[0-9]+$ ]] || die "port must be numeric"
+
+  mkdir -p "$NFT_LOCAL_DIR"
+  local file="$NFT_LOCAL_DIR/50-allow-$port-$proto.nft"
+  cat > "$file" <<EOF
+# $comment
+# Written by: steel-network allow $spec
+add element inet steel allowed_${proto} { $port }
+EOF
+  note "wrote $file"
+  cmd_apply
+  note "inbound $proto/$port is now accepted — this is a hole in the default-deny policy"
+}
+
+cmd_deny() {
+  need_root
+  local spec=${1:?usage: steel-network deny <port>[/tcp|/udp]}
+  local port=${spec%%/*}
+  local proto=${spec##*/}
+  [[ $proto == "$spec" ]] && proto=tcp
+  rm -f "$NFT_LOCAL_DIR/50-allow-$port-$proto.nft"
+  cmd_apply
+}
+
+# Kill-switch: drop outbound as well, except over the tunnel interface.
+#
+# This is the one case where coarse egress filtering at the firewall does
+# something a per-app sandbox cannot: it makes a VPN drop fail closed instead of
+# leaking traffic onto the underlying network.
+cmd_killswitch() {
+  need_root
+  local mode=${1:?usage: steel-network killswitch on|off [interface]}
+  local iface=${2:-}
+  case $mode in
+    on)
+      [[ -n $iface ]] || die "killswitch on needs the tunnel interface, e.g. 'steel-network killswitch on wg0'"
+      mkdir -p "$NFT_LOCAL_DIR"
+      cat > "$NFT_LOCAL_DIR/90-killswitch.nft" <<EOF
+# VPN kill-switch. Outbound traffic is dropped unless it leaves via $iface,
+# goes to a private address (so the local network and the VPN endpoint stay
+# reachable), or is loopback.
+#
+# Written by: steel-network killswitch on $iface
+add chain inet steel killswitch { type filter hook output priority filter + 10; policy drop; }
+add rule inet steel killswitch oif lo accept
+add rule inet steel killswitch oifname "$iface" accept
+add rule inet steel killswitch ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+add rule inet steel killswitch ct state established,related accept
+EOF
+      cmd_apply
+      note "kill-switch active: outbound traffic not leaving $iface is dropped"
+      ;;
+    off)
+      rm -f "$NFT_LOCAL_DIR/90-killswitch.nft"
+      cmd_apply
+      note "kill-switch removed"
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+cmd_dns() {
+  need_root
+  local mode=${1:-}
+  mkdir -p "$RESOLVED_DIR"
+  case $mode in
+    strict|yes)
+      sed -i 's/^DNSOverTLS=.*/DNSOverTLS=yes/' "$RESOLVED_DIR/99-steel.conf"
+      note "DNS-over-TLS is strict: queries fail rather than falling back to plaintext"
+      ;;
+    opportunistic)
+      sed -i 's/^DNSOverTLS=.*/DNSOverTLS=opportunistic/' "$RESOLVED_DIR/99-steel.conf"
+      note "DNS-over-TLS is opportunistic"
+      note "WARNING: this silently falls back to plaintext when 853 is blocked, which is"
+      note "exactly what an on-path attacker would do. Prefer 'strict' plus the captive"
+      note "portal helper."
+      ;;
+    off|no)
+      sed -i 's/^DNSOverTLS=.*/DNSOverTLS=no/' "$RESOLVED_DIR/99-steel.conf"
+      note "DNS-over-TLS disabled; queries are in the clear"
+      ;;
+    "") resolvectl status | sed -n '/DNSOverTLS/p;/Current DNS Server/p' ;;
+    *) die "expected strict, opportunistic, or off" ;;
+  esac
+  systemctl restart systemd-resolved
+}
+
+cmd_mac() {
+  need_root
+  local mode=${1:-}
+  mkdir -p "$NM_DIR"
+  local file="$NM_DIR/99-steel-privacy.conf"
+  case $mode in
+    stable)
+      sed -i 's/^\(wifi\|ethernet\)\.cloned-mac-address=.*/\1.cloned-mac-address=stable/' "$file"
+      note "per-network stable addresses: networks cannot correlate you, portals still work"
+      ;;
+    random)
+      sed -i 's/^\(wifi\|ethernet\)\.cloned-mac-address=.*/\1.cloned-mac-address=random/' "$file"
+      note "fully random addresses on every connection"
+      note "expect captive portal logins and MAC-based network authentication to break"
+      ;;
+    stable-hw|permanent)
+      sed -i 's/^\(wifi\|ethernet\)\.cloned-mac-address=.*/\1.cloned-mac-address=permanent/' "$file"
+      note "using the hardware address"
+      note "WARNING: this is a permanent identifier broadcast to every network in range"
+      ;;
+    "") grep -E 'cloned-mac-address|scan-rand' "$file" ;;
+    *) die "expected stable, random, or permanent" ;;
+  esac
+  systemctl reload NetworkManager 2>/dev/null || systemctl restart NetworkManager
+}
+
+usage() {
+  cat <<'EOF'
+steel-network — apply and adjust the SteelOS network policy
+
+USAGE:
+    steel-network <command> [args]
+
+COMMANDS:
+    apply                       Validate and load the nftables ruleset
+    allow <port>[/proto] [why]  Open an inbound port (records the reason)
+    deny <port>[/proto]         Close a previously opened port
+    killswitch on <iface>       Drop outbound traffic not leaving <iface>
+    killswitch off              Remove the kill-switch
+    dns [strict|opportunistic|off]
+                                Show or set the DNS-over-TLS mode
+    mac [stable|random|permanent]
+                                Show or set MAC address handling
+
+DEFAULTS:
+    Inbound drop, forward drop, outbound allow. No listening ports. DNS over
+    TLS in strict mode. Per-network stable MAC addresses.
+
+    Outbound is not filtered by port, deliberately: every application can
+    speak on 443, so a port-based egress rule produces an unreadable ruleset
+    and no real confinement. Per-application egress control belongs to the
+    sandbox layer. The kill-switch is the exception, because there the
+    property being defended — traffic must not leave outside the tunnel — is
+    one a coarse rule can actually enforce.
+EOF
+}
+
+case ${1:-} in
+  apply)      shift; cmd_apply "$@" ;;
+  allow)      shift; cmd_allow "$@" ;;
+  deny)       shift; cmd_deny "$@" ;;
+  killswitch) shift; cmd_killswitch "$@" ;;
+  dns)        shift; cmd_dns "$@" ;;
+  mac)        shift; cmd_mac "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

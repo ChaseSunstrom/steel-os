@@ -1,0 +1,34 @@
+# bubblejail profile: a GUI application with no specific profile.
+#
+# The default for anything confined with `bubblejail run generic-gui <binary>`.
+# Starts from nothing and grants only what a GUI application cannot run without.
+#
+# The rule for writing a new profile: begin here, run the application, and add
+# exactly the grants it fails without — one at a time, checking after each. It
+# is much easier to start from nothing and add than to start from everything and
+# try to work out what can be removed, and the second approach reliably leaves
+# something in that did not need to be there.
+#
+# `steel-profile` automates this loop for AppArmor; for bubblejail it is manual.
+
+name = "generic-gui"
+
+[services.wayland]
+
+[services.filesystem]
+# No home access at all. An application that needs a file gets it through the
+# file chooser portal, which grants that one file.
+read_write = []
+read_only = []
+
+[services.dbus]
+talk = ["org.freedesktop.portal.Desktop", "org.freedesktop.portal.FileChooser"]
+
+[services.namespaces]
+pid = true
+ipc = true
+net = true
+
+# Network is NOT granted. Add `[services.network]` for applications that need
+# it, and consider whether they need it at all — most local tools do not, and a
+# tool that unexpectedly wants network is worth a second look.

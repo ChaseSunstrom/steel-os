@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# captive-portal-helper — make portal networks usable without disabling DNS
+# security.
+#
+# The problem, stated plainly: SteelOS enforces DNS-over-TLS in strict mode. A
+# captive portal works by intercepting plaintext DNS and HTTP and redirecting
+# them to a login page. Those two facts are incompatible — with strict DoT, the
+# portal cannot redirect us, so the network appears completely dead and the
+# browser never shows a login page.
+#
+# Users faced with that do the one thing that works: turn off DNS security. And
+# it stays off, on every network, forever after. CLAUDE.md counts that as a
+# security failure rather than an inconvenience, which is why this exists.
+#
+# What this does when NetworkManager reports a portal:
+#
+#   1. Drops DNS to plaintext, against the portal's own resolver only, for a
+#      bounded window (default 5 minutes).
+#   2. Opens the portal page in a browser, in a disposable profile — the portal
+#      is an untrusted network appliance and should not touch the user's real
+#      browser profile, cookies, or session.
+#   3. Restores strict DoT unconditionally when the window expires or the
+#      portal clears, whichever comes first.
+#
+# The window is the security cost, and it is a real one: for those minutes, DNS
+# queries on that link are in the clear and visible to the network. We bound it,
+# we announce it, and we scope it to the portal's resolver. That is the honest
+# trade, and it is a far better one than the user disabling DoT permanently.
+
+set -euo pipefail
+
+INTERFACE=${1:-}
+WINDOW_SECONDS=${STEEL_PORTAL_WINDOW:-300}
+STATE_DIR=/run/steelos/portal
+
+log() { logger -t steel-portal -- "$*"; printf 'steel-portal: %s\n' "$*" >&2; }
+
+[[ -n $INTERFACE ]] || { log "usage: captive-portal-helper <interface>"; exit 2; }
+
+mkdir -p "$STATE_DIR"
+
+# Restoring strict DNS is the one thing that must happen no matter how we exit —
+# including if the user closes the browser, the script is killed, or the link
+# drops mid-login. A trap is the only way to make that true for all of them.
+restore() {
+  log "restoring strict DNS-over-TLS on $INTERFACE"
+  resolvectl dnsovertls "$INTERFACE" yes || true
+  resolvectl revert "$INTERFACE" || true
+  rm -f "$STATE_DIR/$INTERFACE"
+}
+trap restore EXIT INT TERM
+
+portal_dns=$(resolvectl dns "$INTERFACE" 2>/dev/null | awk '{print $NF}' | head -1)
+if [[ -z $portal_dns ]]; then
+  log "no DHCP-provided resolver on $INTERFACE; nothing to do"
+  exit 0
+fi
+
+log "captive portal detected on $INTERFACE"
+log "dropping to plaintext DNS against $portal_dns for up to ${WINDOW_SECONDS}s"
+log "DNS queries on this link are visible to the network until the portal clears"
+
+date -u +%s > "$STATE_DIR/$INTERFACE"
+resolvectl dnsovertls "$INTERFACE" no
+resolvectl dns "$INTERFACE" "$portal_dns"
+
+# A disposable profile: the portal is an untrusted appliance on an untrusted
+# network, and it gets to run JavaScript. It has no business sharing a profile
+# with the user's real browsing.
+profile=$(mktemp -d /tmp/steel-portal-XXXXXX)
+cleanup_profile() { rm -rf "$profile"; }
+trap 'cleanup_profile; restore' EXIT INT TERM
+
+portal_url="http://connectivity.steelos.invalid/check"
+if command -v firefox >/dev/null; then
+  firefox --profile "$profile" --new-window "$portal_url" >/dev/null 2>&1 &
+elif command -v xdg-open >/dev/null; then
+  xdg-open "$portal_url" >/dev/null 2>&1 &
+else
+  log "no browser found; open $portal_url manually"
+fi
+browser_pid=${!:-}
+
+# Poll for the portal clearing rather than waiting the full window: the common
+# case is a login that takes fifteen seconds, and leaving DNS in the clear for
+# five minutes afterwards would be gratuitous.
+deadline=$(( $(date -u +%s) + WINDOW_SECONDS ))
+while (( $(date -u +%s) < deadline )); do
+  state=$(nm-online -x -t 1 >/dev/null 2>&1 && nmcli -t -f CONNECTIVITY general status || echo unknown)
+  if [[ $state == full ]]; then
+    log "portal cleared"
+    break
+  fi
+  sleep 5
+done
+
+if [[ -n ${browser_pid:-} ]] && kill -0 "$browser_pid" 2>/dev/null; then
+  kill "$browser_pid" 2>/dev/null || true
+fi
+
+# The traps do the restore.

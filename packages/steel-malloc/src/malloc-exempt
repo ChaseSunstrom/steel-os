@@ -1,0 +1,9 @@
+# Binaries exempted from the hardened_malloc preload.
+#
+# Managed by `steel-malloc exempt` / `steel-malloc unexempt`. One absolute path
+# per line.
+#
+# This file is a record, not a mechanism: the exemption is implemented by a
+# wrapper in /usr/local/bin that clears LD_PRELOAD. The list exists so that the
+# exceptions are visible — an undocumented exemption is indistinguishable from
+# a measure that quietly stopped working.

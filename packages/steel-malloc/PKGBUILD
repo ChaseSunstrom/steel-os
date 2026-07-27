@@ -1,0 +1,20 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-malloc
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="hardened_malloc preload management for SteelOS, with per-binary exemptions"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('hardened_malloc' 'bash')
+optdepends=('steel-check: verify the preload is actually in force')
+backup=('etc/steelos/malloc-exempt')
+source=('src/steel-malloc' 'src/malloc-exempt')
+sha256sums=('SKIP' 'SKIP')
+
+install=steel-malloc.install
+
+package() {
+  install -Dm755 "$srcdir/steel-malloc" "$pkgdir/usr/bin/steel-malloc"
+  install -Dm644 "$srcdir/malloc-exempt" "$pkgdir/etc/steelos/malloc-exempt"
+}

@@ -1,0 +1,47 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-network
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS network defaults: default-deny nftables, strict DNS-over-TLS, MAC randomisation, captive portal handling"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('nftables' 'systemd' 'networkmanager' 'bash')
+optdepends=(
+  'steel-check: verify the policy is actually in force'
+  'firefox: the captive portal helper opens portal pages in a disposable profile'
+)
+backup=(
+  'etc/nftables.conf'
+  'etc/systemd/resolved.conf.d/99-steel.conf'
+  'etc/NetworkManager/conf.d/99-steel-privacy.conf'
+  'etc/NetworkManager/conf.d/98-steel-connectivity.conf'
+)
+source=(
+  'src/nftables.conf'
+  'src/resolved.conf'
+  'src/nm-steel-privacy.conf'
+  'src/nm-steel-connectivity.conf'
+  'src/steel-network'
+  'src/captive-portal-helper'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+install=steel-network.install
+
+package() {
+  install -Dm644 "$srcdir/nftables.conf" "$pkgdir/etc/nftables.conf"
+  install -dm755 "$pkgdir/etc/nftables.d"
+
+  install -Dm644 "$srcdir/resolved.conf" \
+    "$pkgdir/etc/systemd/resolved.conf.d/99-steel.conf"
+
+  install -Dm644 "$srcdir/nm-steel-privacy.conf" \
+    "$pkgdir/etc/NetworkManager/conf.d/99-steel-privacy.conf"
+  install -Dm644 "$srcdir/nm-steel-connectivity.conf" \
+    "$pkgdir/etc/NetworkManager/conf.d/98-steel-connectivity.conf"
+
+  install -Dm755 "$srcdir/steel-network" "$pkgdir/usr/bin/steel-network"
+  install -Dm755 "$srcdir/captive-portal-helper" \
+    "$pkgdir/usr/lib/steelos/captive-portal-helper"
+}

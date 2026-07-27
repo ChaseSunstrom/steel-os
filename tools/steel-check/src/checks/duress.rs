@@ -228,7 +228,7 @@ fn check_no_plaintext_leak(ctx: &Context) -> Outcome {
             )
             .remedy(
                 "Move the state inside the encrypted volume it protects and remove \
-                     the plaintext copy. See docs/deniability.md.",
+                     the plaintext copy. See docs/duress-and-deniability.md.",
             )
     }
 }

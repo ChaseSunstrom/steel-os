@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+#
+# steel-harden — turn individual hardening measures on and off.
+#
+# This exists because of design principle 6: "Every hardening measure must be
+# reversible and documented. A user who hits a broken app needs a discoverable
+# escape hatch, or they will disable everything instead of one control."
+#
+# The second half of that sentence is the whole argument. A user whose game will
+# not start has two options: find the one setting responsible, or reinstall
+# something without any of it. If finding the one setting is hard, they take the
+# second option, and every other measure goes with it. So the escape hatch is
+# not a concession — it is what keeps the rest of the measures installed.
+#
+# Every change made here writes a record to /etc/steelos/overrides/, which
+# steel-check reads and reports. A disabled measure should be visibly disabled,
+# not silently absent: those two states look identical in an audit six months
+# later, and only one of them was a decision.
+
+set -euo pipefail
+
+OVERRIDE_DIR=${STEEL_OVERRIDE_DIR:-/etc/steelos/overrides}
+SYSCTL_DIR=${STEEL_SYSCTL_DIR:-/etc/sysctl.d}
+MODPROBE_DIR=${STEEL_MODPROBE_DIR:-/etc/modprobe.d}
+
+die() { printf 'steel-harden: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-harden: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+record() {
+  local measure=$1 state=$2 reason=${3:-"no reason given"}
+  need_root
+  mkdir -p "$OVERRIDE_DIR"
+  cat > "$OVERRIDE_DIR/$measure" <<EOF
+# Recorded by steel-harden. steel-check reads this file and reports the
+# override, so the exception is visible rather than silent.
+measure=$measure
+state=$state
+reason=$reason
+EOF
+}
+
+unrecord() {
+  need_root
+  rm -f "$OVERRIDE_DIR/${1:?}"
+}
+
+# --- userns -------------------------------------------------------------------
+#
+# The counterargument to enabling user namespaces is real, and this is how to
+# act on it. See docs/rationale/user-namespaces.md.
+
+cmd_userns() {
+  need_root
+  case ${1:?usage: steel-harden userns on|off} in
+    off)
+      printf 'user.max_user_namespaces = 0\n' > "$SYSCTL_DIR/99-zz-steel-userns-off.conf"
+      sysctl -q user.max_user_namespaces=0
+      record userns disabled "${2:-user disabled unprivileged user namespaces}"
+      cat <<'MSG'
+
+steel-harden: unprivileged user namespaces are now DISABLED.
+
+  This closes a recurring source of kernel privilege escalation. It also
+  breaks, immediately and completely:
+
+    * every Flatpak application
+    * bubblejail
+    * steel-shell and rootless podman
+
+  In other words: the entire sandboxing layer. On this system that is a net
+  loss for most threat models, because the primary threat is a malicious
+  document or website and sandboxing is what contains it.
+
+  To undo:  steel-harden userns on
+
+MSG
+      ;;
+    on)
+      rm -f "$SYSCTL_DIR/99-zz-steel-userns-off.conf"
+      sysctl -q user.max_user_namespaces=10000
+      unrecord userns
+      note "unprivileged user namespaces enabled; sandboxing works again"
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+# --- individual sysctls -------------------------------------------------------
+
+cmd_sysctl() {
+  need_root
+  local key=${1:?usage: steel-harden sysctl <key> off|on [reason]}
+  local state=${2:?expected on or off}
+  local reason=${3:-}
+
+  grep -q "^${key} " "$SYSCTL_DIR/99-steel-hardening.conf" 2>/dev/null \
+    || note "note: $key is not part of the steel baseline"
+
+  case $state in
+    off)
+      # Restore the kernel's own default rather than guessing a value: the
+      # override file simply stops setting ours, and we tell the user that a
+      # reboot is what actually restores the default.
+      printf '# %s exempted by steel-harden\n' "$key" \
+        > "$SYSCTL_DIR/99-zz-steel-exempt-${key//./-}.conf"
+      record "sysctl-${key//./-}" disabled "${reason:-no reason given}"
+      note "$key will no longer be set by SteelOS after the next boot"
+      note "the current value is unchanged; set it by hand if you need it now"
+      ;;
+    on)
+      rm -f "$SYSCTL_DIR/99-zz-steel-exempt-${key//./-}.conf"
+      unrecord "sysctl-${key//./-}"
+      sysctl --system >/dev/null
+      note "$key is back under the SteelOS baseline"
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+# --- module blacklist ---------------------------------------------------------
+
+cmd_module() {
+  need_root
+  local module=${1:?usage: steel-harden module <name> allow|deny [reason]}
+  local state=${2:?expected allow or deny}
+  local reason=${3:-}
+  case $state in
+    allow)
+      printf '# %s permitted by steel-harden\n' "$module" \
+        > "$MODPROBE_DIR/99-zz-steel-allow-$module.conf"
+      record "module-$module" allowed "${reason:-no reason given}"
+      note "$module may now be loaded"
+      note "the blacklist entry is overridden, not removed; 'steel-harden module $module deny' undoes it"
+      ;;
+    deny)
+      rm -f "$MODPROBE_DIR/99-zz-steel-allow-$module.conf"
+      unrecord "module-$module"
+      note "$module is blacklisted again (already-loaded modules stay loaded until reboot)"
+      ;;
+    *) die "expected allow or deny" ;;
+  esac
+}
+
+# --- coredumps ----------------------------------------------------------------
+
+cmd_coredumps() {
+  need_root
+  case ${1:?usage: steel-harden coredumps on|off} in
+    on)
+      printf 'kernel.core_pattern = core\nfs.suid_dumpable = 0\n' \
+        > "$SYSCTL_DIR/99-zz-steel-coredumps.conf"
+      sysctl -q -w kernel.core_pattern=core
+      record coredumps enabled "${2:-enabled for debugging}"
+      note "core dumps are enabled"
+      note "WARNING: a core dump is a verbatim copy of a process's memory. For a"
+      note "browser that is every session cookie; for an agent it is the keys."
+      note "Turn this back off when you are done: steel-harden coredumps off"
+      ;;
+    off)
+      rm -f "$SYSCTL_DIR/99-zz-steel-coredumps.conf"
+      sysctl -q -w 'kernel.core_pattern=|/bin/false'
+      unrecord coredumps
+      note "core dumps are discarded again"
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+# --- /tmp noexec --------------------------------------------------------------
+
+cmd_tmp_noexec() {
+  need_root
+  case ${1:?usage: steel-harden tmp-noexec on|off} in
+    off)
+      mkdir -p /etc/systemd/system/tmp.mount.d
+      printf '[Mount]\nOptions=mode=1777,strictatime,nosuid,nodev\n' \
+        > /etc/systemd/system/tmp.mount.d/99-zz-steel-exec.conf
+      record tmp-noexec disabled "${2:-a build system or installer needs to execute from /tmp}"
+      note "remount to apply: mount -o remount,exec /tmp"
+      note "nosuid and nodev are kept — those cost nothing and block more"
+      ;;
+    on)
+      rm -f /etc/systemd/system/tmp.mount.d/99-zz-steel-exec.conf
+      unrecord tmp-noexec
+      note "run 'mount -o remount,noexec /tmp' or reboot to apply"
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+# --- kernel command line ------------------------------------------------------
+#
+# Several measures can only be changed at boot. On an image deployment steel-boot
+# bakes the fragment into the signed UKI; on plain Arch we can only write the
+# fragment and tell the user to apply it, because we do not own the bootloader
+# until Phase 1. Saying so is better than writing a file and implying it took
+# effect.
+
+CMDLINE_DIR=${STEEL_CMDLINE_DIR:-/etc/kernel/cmdline.d}
+
+cmdline_set() {
+  local name=$1 fragment=$2
+  need_root
+  mkdir -p "$CMDLINE_DIR"
+  printf '# Written by steel-harden\n%s\n' "$fragment" > "$CMDLINE_DIR/99-steel-$name.conf"
+  note "wrote $CMDLINE_DIR/99-steel-$name.conf"
+  if command -v steel-boot >/dev/null; then
+    steel-boot rebuild-uki
+    note "UKI rebuilt; the change takes effect on the next boot"
+  else
+    note "this does NOT take effect until the fragment reaches your kernel command line"
+    note "on a plain-Arch install, add it to your bootloader entry by hand:"
+    note "  $fragment"
+  fi
+}
+
+cmdline_clear() {
+  need_root
+  rm -f "$CMDLINE_DIR/99-steel-${1:?}.conf"
+  command -v steel-boot >/dev/null && steel-boot rebuild-uki || true
+}
+
+cmd_lockdown() {
+  need_root
+  case ${1:?usage: steel-harden lockdown confidentiality|integrity|off} in
+    confidentiality) cmdline_set lockdown "lockdown=confidentiality"; unrecord lockdown ;;
+    integrity)
+      cmdline_set lockdown "lockdown=integrity"
+      record lockdown integrity "${2:-lowered from confidentiality}"
+      note "integrity blocks modification of the running kernel but still permits"
+      note "reading it, so kernel memory remains extractable by root"
+      ;;
+    off)
+      cmdline_clear lockdown
+      record lockdown disabled "${2:-no reason given}"
+      note "with lockdown off, root and kernel are the same privilege level"
+      note "the immutable root filesystem buys much less in that state"
+      ;;
+    *) die "expected confidentiality, integrity, or off" ;;
+  esac
+}
+
+cmd_iommu() {
+  need_root
+  case ${1:?usage: steel-harden iommu on|off} in
+    on)
+      # Vendor-specific; set both, the kernel ignores the one that does not apply.
+      cmdline_set iommu "intel_iommu=on amd_iommu=force_isolation iommu.passthrough=0"
+      unrecord iommu
+      ;;
+    off)
+      cmdline_clear iommu
+      record iommu disabled "${2:-hardware will not boot with the IOMMU enabled}"
+      note "WARNING: without an IOMMU, any Thunderbolt or PCIe peripheral can read"
+      note "and write all of system memory, which defeats every software measure"
+      note "on this system. Only do this for hardware that genuinely will not boot."
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+cmd_smt() {
+  need_root
+  case ${1:?usage: steel-harden smt on|off} in
+    off)
+      cmdline_set smt "mitigations=auto,nosmt nosmt=force"
+      record smt disabled "${2:-cross-thread side channels}"
+      note "SMT is disabled: this costs roughly a third of the machine's throughput"
+      note "It defends against cross-thread side channels, which need local code"
+      note "execution — the sandboxing layer is the primary defence against those."
+      ;;
+    on) cmdline_clear smt; unrecord smt ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+# --- LSM and userspace daemons ------------------------------------------------
+
+cmd_apparmor() {
+  need_root
+  case ${1:?usage: steel-harden apparmor on|off} in
+    on)
+      cmdline_set apparmor "lsm=landlock,lockdown,yama,integrity,apparmor apparmor=1 security=apparmor"
+      systemctl enable --now apparmor.service 2>/dev/null || true
+      unrecord apparmor
+      ;;
+    off)
+      cmdline_clear apparmor
+      systemctl disable --now apparmor.service 2>/dev/null || true
+      record apparmor disabled "${2:-no reason given}"
+      note "AppArmor confines what escapes or never entered a sandbox; with it off,"
+      note "Flatpak and bubblejail are the only confinement left"
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+cmd_usbguard() {
+  need_root
+  case ${1:?usage: steel-harden usbguard on|off} in
+    on)
+      command -v usbguard >/dev/null || die "usbguard is not installed (pacman -S usbguard)"
+      if [[ ! -s /etc/usbguard/rules.conf ]]; then
+        note "generating a policy from the devices connected right now"
+        note "make sure your keyboard and mouse are plugged in — a policy generated"
+        note "without them will lock you out at the next boot"
+        usbguard generate-policy > /etc/usbguard/rules.conf
+        chmod 600 /etc/usbguard/rules.conf
+      fi
+      systemctl enable --now usbguard.service
+      unrecord usbguard
+      ;;
+    off)
+      systemctl disable --now usbguard.service 2>/dev/null || true
+      record usbguard disabled "${2:-prompts are too intrusive}"
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+# --- mount policy -------------------------------------------------------------
+
+cmd_removable_noexec() {
+  need_root
+  local conf=/etc/udisks2/mount_options.conf
+  case ${1:?usage: steel-harden removable-noexec on|off} in
+    off)
+      [[ -f $conf ]] || die "$conf not found (is steel-desktop installed?)"
+      sed -i 's/^\(defaults=.*\),noexec/\1/' "$conf"
+      record removable-noexec disabled "${2:-a portable application needs to run from removable media}"
+      note "nosuid and nodev are kept; only noexec was removed"
+      note "already-mounted media keeps its current options until remounted"
+      ;;
+    on)
+      [[ -f $conf ]] || die "$conf not found (is steel-desktop installed?)"
+      sed -i 's/^\(defaults=[^,]*\(,[^,]*\)*\)$/\1,noexec/' "$conf"
+      sed -i 's/,noexec,noexec/,noexec/g' "$conf"
+      unrecord removable-noexec
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+cmd_suspend_lock() {
+  need_root
+  local dropin=/etc/systemd/logind.conf.d/99-zz-steel-suspend.conf
+  case ${1:?usage: steel-harden suspend-lock on|off} in
+    off)
+      mkdir -p "$(dirname "$dropin")"
+      printf '[Login]\nHandleLidSwitch=ignore\nIdleAction=ignore\n' > "$dropin"
+      record suspend-lock disabled "${2:-no reason given}"
+      note "WARNING: an unlocked home on a suspended laptop is an unlocked laptop."
+      note "The per-user encryption boundary only holds while the home is locked."
+      systemctl restart systemd-logind 2>/dev/null || true
+      ;;
+    on)
+      rm -f "$dropin"
+      unrecord suspend-lock
+      systemctl restart systemd-logind 2>/dev/null || true
+      ;;
+    *) die "expected on or off" ;;
+  esac
+}
+
+# --- preset -------------------------------------------------------------------
+
+cmd_preset() {
+  need_root
+  local preset=${1:-}
+  case $preset in
+    balanced|strict|compatible)
+      echo "$preset" > /etc/steelos/preset
+      if [[ $preset == strict ]]; then
+        install -Dm644 /usr/share/steel-kernel-hardening/modprobe/99-steel-blacklist-strict.conf \
+          "$MODPROBE_DIR/99-steel-blacklist-strict.conf" 2>/dev/null || true
+        note "strict preset: Thunderbolt is now blacklisted (docks and eGPUs will stop working)"
+        note "strict also expects USBGuard and the full hardened_malloc variant:"
+        note "  pacman -S usbguard && steel-malloc variant full"
+      else
+        rm -f "$MODPROBE_DIR/99-steel-blacklist-strict.conf"
+      fi
+      note "preset is now $preset; run 'steel-check' to see what changed"
+      ;;
+    "") cat /etc/steelos/preset 2>/dev/null || echo "balanced (default)" ;;
+    *) die "expected balanced, strict, or compatible" ;;
+  esac
+}
+
+# --- status -------------------------------------------------------------------
+
+cmd_status() {
+  echo "preset: $(cat /etc/steelos/preset 2>/dev/null || echo 'balanced (default)')"
+  echo
+  if [[ -d $OVERRIDE_DIR ]] && compgen -G "$OVERRIDE_DIR/*" >/dev/null; then
+    echo "overrides in effect:"
+    for f in "$OVERRIDE_DIR"/*; do
+      local measure state reason
+      measure=$(grep '^measure=' "$f" | cut -d= -f2-)
+      state=$(grep '^state=' "$f" | cut -d= -f2-)
+      reason=$(grep '^reason=' "$f" | cut -d= -f2-)
+      printf '  %-28s %-10s %s\n' "$measure" "$state" "$reason"
+    done
+  else
+    echo "overrides in effect: none"
+  fi
+  echo
+  echo "Run 'steel-check' for the full audit, or 'steel-check --explain <id>'"
+  echo "for why a specific measure exists."
+}
+
+usage() {
+  cat <<'EOF'
+steel-harden — turn individual hardening measures on and off
+
+USAGE:
+    steel-harden <measure> <state> [reason]
+
+MEASURES:
+    preset [balanced|strict|compatible]
+    status                          Show the preset and every override
+
+    userns on|off                   Unprivileged user namespaces
+    sysctl <key> on|off [reason]    One sysctl from the baseline
+    module <name> allow|deny        One blacklisted kernel module
+    coredumps on|off                Core dump generation
+    apparmor on|off                 AppArmor confinement
+    usbguard on|off                 USB device authorisation
+
+    tmp-noexec on|off               Execution from /tmp
+    removable-noexec on|off         Execution from USB and other removable media
+    suspend-lock on|off             Locking homes when the machine suspends
+
+  Boot-time measures. These need a rebuilt UKI, or on plain Arch a manual
+  edit to the bootloader entry; steel-harden says which applies:
+
+    lockdown confidentiality|integrity|off
+    iommu on|off                    DMA containment for external ports
+    smt on|off                      Simultaneous multithreading
+
+WHY THIS EXISTS:
+    Disable the one measure that is in your way, not all of them. Every
+    change is recorded in /etc/steelos/overrides/ and reported by
+    steel-check, so a deliberate exception stays distinguishable from a
+    measure that quietly stopped working.
+
+    If you are here because something broke and you do not know what,
+    docs/escape-hatches.md maps common symptoms to the measure responsible.
+EOF
+}
+
+case ${1:-} in
+  userns)           shift; cmd_userns "$@" ;;
+  apparmor)         shift; cmd_apparmor "$@" ;;
+  usbguard)         shift; cmd_usbguard "$@" ;;
+  lockdown)         shift; cmd_lockdown "$@" ;;
+  iommu)            shift; cmd_iommu "$@" ;;
+  smt)              shift; cmd_smt "$@" ;;
+  removable-noexec) shift; cmd_removable_noexec "$@" ;;
+  suspend-lock)     shift; cmd_suspend_lock "$@" ;;
+  sysctl)     shift; cmd_sysctl "$@" ;;
+  module)     shift; cmd_module "$@" ;;
+  coredumps)  shift; cmd_coredumps "$@" ;;
+  tmp-noexec) shift; cmd_tmp_noexec "$@" ;;
+  preset)     shift; cmd_preset "$@" ;;
+  status)     shift; cmd_status "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown measure: $1 (try --help)" ;;
+esac

@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+#
+# steel-profile — guided AppArmor profile authoring.
+#
+# AppArmor's own workflow is aa-genprof → run the program → aa-logprof →
+# aa-enforce, and it works, but it assumes you already know that sequence and
+# what each step does. Users who do not know it end up with either no profile or
+# a profile stuck in complain mode forever, which logs and permits and defends
+# nothing.
+#
+# This wraps the sequence with the state visible at each point, and — more
+# importantly — it refuses to leave a profile in complain mode silently. That is
+# the failure this tool exists to prevent.
+
+set -euo pipefail
+
+PROFILE_DIR=${STEEL_APPARMOR_DIR:-/etc/apparmor.d}
+
+die() { printf 'steel-profile: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-profile: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+profile_name() {
+  # AppArmor names profiles after the absolute path with / replaced by .
+  local path=$1
+  echo "${path#/}" | tr '/' '.'
+}
+
+cmd_new() {
+  need_root
+  local binary=${1:?usage: steel-profile new <path-to-binary>}
+  [[ -x $binary ]] || die "$binary is not an executable"
+  command -v aa-genprof >/dev/null || die "aa-genprof not found (pacman -S apparmor)"
+
+  cat <<MSG
+
+steel-profile: about to build a profile for $binary
+
+  How this works:
+
+    1. aa-genprof starts and waits.
+    2. In ANOTHER terminal, run $binary and use it normally — open the files
+       it needs, use every feature you care about. Anything you do not
+       exercise now will be denied later.
+    3. Come back here and answer the questions. When unsure, choose the
+       narrowest option; you can always widen it with 'steel-profile refine'.
+    4. The profile lands in complain mode. It does not confine anything
+       until you run 'steel-profile enforce $binary'.
+
+  Step 2 is the part people skip, and it is the part that matters. A profile
+  built from thirty seconds of use will break the program a week later, in
+  production, in a way that is hard to connect back to here.
+
+MSG
+  read -r -p "press enter to start aa-genprof, or Ctrl-C to abort "
+  aa-genprof "$binary"
+  note "profile created in complain mode"
+  note "run '$binary' for a while, then: steel-profile refine $binary"
+}
+
+cmd_refine() {
+  need_root
+  local binary=${1:?usage: steel-profile refine <path-to-binary>}
+  command -v aa-logprof >/dev/null || die "aa-logprof not found (pacman -S apparmor)"
+  note "reviewing what $binary did that the profile does not yet allow"
+  aa-logprof
+  note "run 'steel-profile status $binary' to see whether it is enforcing yet"
+}
+
+cmd_enforce() {
+  need_root
+  local binary=${1:?usage: steel-profile enforce <path-to-binary>}
+  local name
+  name=$(profile_name "$binary")
+  [[ -f "$PROFILE_DIR/$name" ]] || die "no profile at $PROFILE_DIR/$name — run 'steel-profile new $binary' first"
+
+  # Refuse to enforce a profile that has never seen the program run. Enforcing
+  # an empty profile is how a program gets confined into uselessness, and the
+  # user blames AppArmor rather than the empty profile.
+  local rule_count
+  rule_count=$(grep -cE '^\s+/' "$PROFILE_DIR/$name" || true)
+  if (( rule_count < 5 )); then
+    note "WARNING: this profile has only $rule_count file rules."
+    note "That usually means the program was barely exercised during aa-genprof."
+    note "Enforcing it now will probably break the program in confusing ways."
+    read -r -p "type 'enforce' to do it anyway: " confirm
+    [[ $confirm == enforce ]] || die "aborted; run the program under 'steel-profile refine' first"
+  fi
+
+  aa-enforce "$PROFILE_DIR/$name"
+  note "$name is now enforcing"
+  note "if the program breaks: 'steel-profile complain $binary' puts it back, and"
+  note "'journalctl -b -g apparmor' shows exactly what was denied"
+}
+
+cmd_complain() {
+  need_root
+  local binary=${1:?usage: steel-profile complain <path-to-binary>}
+  aa-complain "$PROFILE_DIR/$(profile_name "$binary")"
+  note "profile is in complain mode: it logs violations and permits them"
+  note "this confines nothing — it is a debugging state, not a resting state"
+}
+
+cmd_status() {
+  if [[ $# -gt 0 ]]; then
+    local name
+    name=$(profile_name "$1")
+    grep -E "^$name " /sys/kernel/security/apparmor/profiles 2>/dev/null \
+      || echo "$name: no profile loaded"
+    return
+  fi
+  command -v aa-status >/dev/null || die "aa-status not found"
+  aa-status --verbose | head -20
+  echo
+  local complain
+  complain=$(grep -c '(complain)' /sys/kernel/security/apparmor/profiles 2>/dev/null || echo 0)
+  if (( complain > 0 )); then
+    echo "NOTE: $complain profile(s) are in complain mode. They log and permit."
+    echo "      A profile left in complain mode is a profile that is not working."
+    grep '(complain)' /sys/kernel/security/apparmor/profiles | sed 's/^/      /'
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+steel-profile — build and manage AppArmor profiles
+
+USAGE:
+    steel-profile new <binary>       Start a new profile (complain mode)
+    steel-profile refine <binary>    Review logged violations and add rules
+    steel-profile enforce <binary>   Switch the profile to enforcing
+    steel-profile complain <binary>  Switch back to complain, for debugging
+    steel-profile status [binary]    Show profile state
+
+THE WORKFLOW:
+    new → use the program thoroughly → refine → enforce
+
+    A profile in complain mode logs violations and permits them, so it
+    defends nothing. That state is for building the profile, not for living
+    in. `steel-profile status` names anything left there, and steel-check
+    reports it as a warning.
+
+WHEN SOMETHING BREAKS:
+    journalctl -b -g apparmor      shows exactly what was denied
+    steel-profile complain <bin>   unblocks immediately while you work it out
+    steel-profile refine <bin>     turns those denials into rules
+EOF
+}
+
+case ${1:-} in
+  new)      shift; cmd_new "$@" ;;
+  refine)   shift; cmd_refine "$@" ;;
+  enforce)  shift; cmd_enforce "$@" ;;
+  complain) shift; cmd_complain "$@" ;;
+  status)   shift; cmd_status "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

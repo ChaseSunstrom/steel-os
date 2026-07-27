@@ -1,0 +1,29 @@
+post_install() {
+  cat <<'MSG'
+
+steel-apparmor: AppArmor is NOT active until the kernel is told to enable it.
+
+  Arch builds AppArmor into the kernel but does not select it, so installing
+  the package alone changes nothing. Add this to your kernel command line and
+  reboot:
+
+      lsm=landlock,lockdown,yama,integrity,apparmor apparmor=1 security=apparmor
+
+  The full fragment is at /usr/share/steel-apparmor/cmdline. Note that the
+  lsm= list must be complete — naming only apparmor silently disables
+  landlock, lockdown, yama, and integrity.
+
+  On an image deployment this is baked into the signed UKI and you do not
+  have to do anything.
+
+  Then:
+
+      systemctl enable --now apparmor.service
+      steel-profile status
+
+MSG
+}
+
+post_upgrade() {
+  systemctl is-active --quiet apparmor.service && systemctl reload apparmor.service || true
+}

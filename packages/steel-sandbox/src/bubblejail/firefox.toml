@@ -1,0 +1,49 @@
+# bubblejail profile: Firefox installed as a native package.
+#
+# The Flatpak build is the preferred path and gets the global overrides. This
+# profile is for the case where Firefox comes from the image instead — then
+# nothing above AppArmor confines it, and a browser is the single most exposed
+# process on a desktop.
+#
+# What this grants, and nothing else:
+#   * Wayland, for display. No X11: any X client can keylog every other one.
+#   * Its own profile directory, and the XDG download directory.
+#   * Network, audio, and dbus for portals.
+#
+# What it deliberately withholds: the rest of $HOME. A browser that can read
+# ~/.ssh has made every other measure on the system irrelevant. File uploads go
+# through the XDG desktop portal, which grants access to the one file the user
+# picked, at the moment they picked it.
+
+name = "firefox"
+executable = "/usr/bin/firefox"
+
+[services.wayland]
+[services.network]
+[services.pulse_audio]
+
+[services.home_share]
+# The profile directory only. Not $HOME.
+home_paths = [".mozilla", ".cache/mozilla"]
+
+[services.direct_rendering]
+enable_aco = true
+
+[services.filesystem]
+# Downloads are read-write; everything else in $HOME is invisible.
+read_write = ["xdg-download"]
+
+[services.dbus]
+# Portals only. The session bus is a control channel to the rest of the
+# desktop, and unrestricted access to it is a slow sandbox escape.
+talk = [
+  "org.freedesktop.portal.Desktop",
+  "org.freedesktop.portal.Documents",
+  "org.freedesktop.portal.FileChooser",
+]
+
+[services.namespaces]
+# No access to the host's process table: /proc leaks what else is running,
+# including command lines that sometimes carry secrets.
+pid = true
+ipc = true

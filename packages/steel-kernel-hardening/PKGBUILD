@@ -1,0 +1,58 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-kernel-hardening
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Kernel hardening baseline for SteelOS: sysctls, module blacklists, cmdline fragment, coredump policy"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('systemd')
+# steel-check is what makes this package auditable rather than aspirational.
+optdepends=('steel-check: verify the baseline is actually in force')
+backup=(
+  'etc/sysctl.d/99-steel-hardening.conf'
+  'etc/sysctl.d/98-steel-userns.conf'
+  'etc/modprobe.d/99-steel-blacklist.conf'
+  'etc/security/limits.d/99-steel-coredump.conf'
+)
+source=(
+  'src/sysctl/99-steel-hardening.conf'
+  'src/sysctl/98-steel-userns.conf'
+  'src/modprobe/99-steel-blacklist.conf'
+  'src/modprobe/99-steel-blacklist-strict.conf'
+  'src/cmdline/hardening'
+  'src/cmdline/hardening-strict'
+  'src/limits/99-steel-coredump.conf'
+  'src/systemd/coredump-99-steel.conf'
+  'src/systemd/tmp-mount-99-steel.conf'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm644 "$srcdir/99-steel-hardening.conf" \
+    "$pkgdir/etc/sysctl.d/99-steel-hardening.conf"
+  install -Dm644 "$srcdir/98-steel-userns.conf" \
+    "$pkgdir/etc/sysctl.d/98-steel-userns.conf"
+
+  install -Dm644 "$srcdir/99-steel-blacklist.conf" \
+    "$pkgdir/etc/modprobe.d/99-steel-blacklist.conf"
+
+  # The strict additions are staged, not installed. `steel-harden preset strict`
+  # links them into place. Installing them unconditionally would take away
+  # Thunderbolt docks from every balanced install.
+  install -Dm644 "$srcdir/99-steel-blacklist-strict.conf" \
+    "$pkgdir/usr/share/$pkgname/modprobe/99-steel-blacklist-strict.conf"
+
+  # The cmdline fragments are data, not configuration: on an image deployment
+  # steel-boot bakes them into the UKI, and on plain Arch the user applies them
+  # to their bootloader by hand.
+  install -Dm644 "$srcdir/hardening" "$pkgdir/usr/share/$pkgname/cmdline"
+  install -Dm644 "$srcdir/hardening-strict" "$pkgdir/usr/share/$pkgname/cmdline-strict"
+
+  install -Dm644 "$srcdir/99-steel-coredump.conf" \
+    "$pkgdir/etc/security/limits.d/99-steel-coredump.conf"
+  install -Dm644 "$srcdir/coredump-99-steel.conf" \
+    "$pkgdir/etc/systemd/coredump.conf.d/99-steel.conf"
+  install -Dm644 "$srcdir/tmp-mount-99-steel.conf" \
+    "$pkgdir/etc/systemd/system/tmp.mount.d/99-steel.conf"
+}

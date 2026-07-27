@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+#
+# steel-shell — a mutable Arch container where `pacman -S` works normally.
+#
+# This is the answer to the question the immutable design creates: "where do I
+# do my actual work?" /usr is read-only and verity-sealed, so package
+# installation at runtime is impossible by construction. CLAUDE.md is blunt
+# about the consequence — if a developer cannot do a day's normal CLI work
+# without leaving the OS, the OS is hostile and people leave.
+#
+# So: a rootless Podman container running the same Arch base, with the user's
+# home mounted, where pacman works and nothing escapes into the verified root.
+# Install what you like; it affects the container and nothing else. Delete the
+# container and the machine is exactly as it was.
+#
+# Rootless, deliberately. This depends on user namespaces, which is why they are
+# enabled system-wide (see docs/rationale/user-namespaces.md). A rootful
+# container runtime would put a root daemon in the path of every development
+# task, which is the opposite of what this is for.
+
+set -euo pipefail
+
+CONTAINER=${STEEL_SHELL_NAME:-steel-shell}
+IMAGE=${STEEL_SHELL_IMAGE:-docker.io/library/archlinux:base-devel}
+
+die() { printf 'steel-shell: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-shell: %s\n' "$*" >&2; }
+
+command -v podman >/dev/null || die "podman is not installed (pacman -S podman)"
+
+# Refuse to run as root. A rootful steel-shell would have the host's root
+# privileges and could write to places the whole design says are unwritable —
+# and it would work often enough that people would keep doing it.
+[[ ${EUID:-$(id -u)} -ne 0 ]] || die "run as your own user, not root; see 'steel-shell --help'"
+
+exists() { podman container exists "$CONTAINER"; }
+
+create() {
+  note "creating container '$CONTAINER' from $IMAGE (first run only)"
+  podman create \
+    --name "$CONTAINER" \
+    --hostname "$CONTAINER" \
+    --userns=keep-id \
+    --user "$(id -u):$(id -g)" \
+    --volume "$HOME:$HOME:rslave" \
+    --workdir "$HOME" \
+    --env "HOME=$HOME" \
+    --env "TERM=${TERM:-xterm-256color}" \
+    --security-opt label=disable \
+    --interactive --tty \
+    "$IMAGE" /bin/bash >/dev/null
+
+  cat <<MSG >&2
+
+steel-shell: container created.
+
+  Inside it, pacman works normally and affects nothing outside the container.
+  Your home directory is shared with the host, so files you create are real
+  files on the host — the container is a mutable *system*, not a sandbox for
+  your data.
+
+  Two things to know:
+
+    * Anything you install here is gone if you run 'steel-shell reset'. For
+      tools you want permanently, put them in the manifest instead; that is
+      what makes two machines the same machine.
+
+    * This shares your home. It is not an isolation boundary against
+      something you deliberately run inside it. For that, use a separate
+      profile or a Flatpak.
+
+MSG
+}
+
+cmd_enter() {
+  exists || create
+  podman start "$CONTAINER" >/dev/null
+  exec podman exec --interactive --tty --workdir "$PWD" \
+    --env "TERM=${TERM:-xterm-256color}" \
+    "$CONTAINER" "${@:-/bin/bash}"
+}
+
+cmd_run() {
+  [[ $# -gt 0 ]] || die "usage: steel-shell run <command> [args]"
+  exists || create
+  podman start "$CONTAINER" >/dev/null
+  exec podman exec --interactive --tty --workdir "$PWD" "$CONTAINER" "$@"
+}
+
+cmd_reset() {
+  exists || die "no container named '$CONTAINER'"
+  note "this destroys the container and everything installed in it"
+  note "your home directory is untouched — it lives on the host"
+  read -r -p "type the container name to confirm: " confirm
+  [[ $confirm == "$CONTAINER" ]] || die "not confirmed"
+  podman rm --force "$CONTAINER" >/dev/null
+  note "removed; the next 'steel-shell' will create a fresh one"
+}
+
+cmd_status() {
+  if exists; then
+    podman ps --all --filter "name=^${CONTAINER}$" \
+      --format 'container: {{.Names}}\nimage:     {{.Image}}\nstate:     {{.Status}}'
+  else
+    echo "container: not created (run 'steel-shell' to create it)"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+steel-shell — a mutable Arch container for CLI and development work
+
+USAGE:
+    steel-shell [enter]          Open a shell in the container
+    steel-shell run <cmd>...     Run one command in the container
+    steel-shell status           Show the container's state
+    steel-shell reset            Destroy and recreate it
+
+WHY THIS EXISTS:
+    /usr is read-only and verity-sealed, so `pacman -S` on the host is
+    impossible by construction rather than by policy. This is where package
+    installation still works.
+
+WHERE THINGS BELONG:
+    GUI applications          Flatpak (--user), instant and sandboxed
+    CLI tools, dev toolchains steel-shell
+    Kernel, drivers, base     the manifest, applied with `steelctl apply`
+    Signed system extensions  systemd-sysext
+
+    If your need is met by the first two, it must not require an image
+    rebuild. Rebuilds are for the kernel, drivers, base system, and
+    hardening posture.
+
+CAVEATS:
+    Your home is shared with the host, so this is not a data-isolation
+    boundary. Anything installed here disappears on `reset`; put tools you
+    depend on in the manifest so a second machine has them too.
+EOF
+}
+
+case ${1:-enter} in
+  enter)  shift || true; cmd_enter "$@" ;;
+  run)    shift; cmd_run "$@" ;;
+  reset)  shift; cmd_reset "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  -h|--help|help) usage ;;
+  *) cmd_enter "$@" ;;
+esac

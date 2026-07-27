@@ -1,0 +1,65 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+#
+# Packages the auditor. Built from the workspace at the repo root rather than a
+# release tarball so that what is audited and what is shipped are the same
+# commit — a steel-check that lags the packages it audits is worse than none.
+
+pkgname=steel-check
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Audit a SteelOS system against every hardening measure it claims"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=()
+makedepends=('rust' 'cargo')
+optdepends=(
+  'sbctl: Secure Boot key and signature checks'
+  'nftables: firewall policy check'
+  'iproute2: listening-socket check'
+  'cryptsetup: LUKS parameter and verity checks'
+  'apparmor: profile enforcement check'
+)
+source=("$pkgname-$pkgver.tar.gz::file://$PWD/../../")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$srcdir"
+  # Vendoring is deliberate but trivial: steel-check has no dependencies. The
+  # step is kept so the build is offline-reproducible if that ever changes, and
+  # so a dependency appearing is visible here rather than silently downloaded.
+  cargo fetch --locked --manifest-path Cargo.toml 2>/dev/null || true
+}
+
+build() {
+  cd "$srcdir"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --release --frozen --package steel-check
+}
+
+check() {
+  cd "$srcdir"
+  export RUSTUP_TOOLCHAIN=stable
+  # The consistency tests compare the shipped drop-ins against the tables the
+  # auditor uses. If they fail, the packages and the auditor disagree and the
+  # auditor is the one that is wrong — do not ship that.
+  cargo test --release --frozen --package steel-check
+}
+
+package() {
+  cd "$srcdir"
+  install -Dm755 "target/release/steel-check" "$pkgdir/usr/bin/steel-check"
+
+  install -dm755 "$pkgdir/etc/steelos"
+  install -Dm644 /dev/null "$pkgdir/etc/steelos/expected-listeners"
+  cat > "$pkgdir/etc/steelos/expected-listeners" <<'EOF'
+# Listening sockets that steel-check should not report.
+#
+# One port or address:port per line; # starts a comment. Empty by default,
+# because SteelOS ships with no listening services and sshd is not installed.
+#
+# Recording an exception here rather than ignoring the warning is the point:
+# an undocumented listener and a forgotten one look identical six months later.
+EOF
+}

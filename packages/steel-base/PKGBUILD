@@ -1,0 +1,52 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+#
+# The meta-package. `pacman -S steel-base && steel-check` is the Phase 0
+# milestone: on a normal Arch VM, the audit comes back green.
+#
+# Every component is a separate package that works on plain Arch on its own.
+# That is deliberate — it keeps Phase 0 useful to people who will never install
+# the full OS, and it keeps us honest about coupling. If steel-network only
+# works when steel-boot is present, we have built a distribution that happens to
+# ship packages rather than packages that happen to compose into a distribution.
+
+pkgname=steel-base
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS baseline: hardening, sandboxing, network and audit packages"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+# Users change the preset; an upgrade must not silently move them back to
+# balanced after they chose strict.
+backup=('etc/steelos/preset')
+
+depends=(
+  'steel-check'
+  'steel-kernel-hardening'
+  'steel-malloc'
+  'steel-network'
+  'steel-sandbox'
+  'steel-apparmor'
+)
+
+# Not dependencies, because each takes something away as well as adding
+# something, and that should be a choice rather than a side effect of installing
+# a meta-package.
+optdepends=(
+  'steel-desktop: Plasma privacy defaults, removable-media mount policy'
+  'usbguard: USB device authorisation, required by the strict preset'
+  'linux-hardened: the kernel this baseline is tuned for'
+  'flatpak: the primary path for installing GUI applications'
+  'podman: required by steel-shell for mutable development containers'
+)
+
+package() {
+  install -dm755 "$pkgdir/etc/steelos"
+
+  # The preset is the single switch the checks consult to decide whether a
+  # measure is required, optional, or deliberately absent. Default to balanced:
+  # strict removes functionality people rely on, and an OS that gets uninstalled
+  # protects nobody.
+  echo 'balanced' > "$pkgdir/etc/steelos/preset"
+  chmod 644 "$pkgdir/etc/steelos/preset"
+}

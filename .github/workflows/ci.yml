@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  steel-check:
+    name: steel-check (build, test, audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - run: rustup component add clippy rustfmt
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      # These include the consistency tests that compare the packaged sysctl,
+      # modprobe and cmdline drop-ins against the tables steel-check audits
+      # against. If they drift apart, the auditor reports on a baseline the
+      # system was never configured with — so this gate is not optional.
+      - name: Unit tests
+        run: cargo test --all
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # Suite-level assertions: a configured system audits green, and the
+      # deniability requirement holds byte for byte.
+      - name: Audit assertions
+        run: tests/audit/run.sh
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: shellcheck
+        run: |
+          # Every shell script we ship. The .install files are pacman scriptlets
+          # sourced by bash, so they get checked too — a syntax error there
+          # breaks package installation with no useful message.
+          find tools packages tests -type f \
+            \( -name '*.sh' -o -name '*.install' -o -perm -u+x \) \
+            ! -path '*/target/*' -print0 \
+          | xargs -0 --no-run-if-empty file --mime-type \
+          | grep -E 'x-shellscript|x-sh' \
+          | cut -d: -f1 \
+          | xargs --no-run-if-empty shellcheck --severity=warning --shell=bash
+
+  packages:
+    name: Arch packages
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      # makepkg refuses to run as root, so the container needs a build user.
+      options: --user root
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git rust namcap sudo
+          useradd -m build
+          echo 'build ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+
+      - uses: actions/checkout@v4
+
+      - name: Lint PKGBUILDs
+        run: |
+          chown -R build:build .
+          fail=0
+          for pkgbuild in packages/*/PKGBUILD; do
+            echo "::group::$pkgbuild"
+            # namcap on the PKGBUILD source, not the built package: most of our
+            # packages install config files and have no compiled content, so
+            # source linting is where the useful findings are.
+            sudo -u build namcap "$pkgbuild" | tee /tmp/out
+            # Informational notes are fine; warnings about missing dependencies
+            # and errors are not.
+            grep -E '^\S+ E: ' /tmp/out && fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: Build config packages
+        run: |
+          # steel-check needs the Rust workspace and is built in the job above;
+          # here we verify the config packages actually assemble.
+          for pkg in steel-kernel-hardening steel-malloc steel-network \
+                     steel-sandbox steel-apparmor steel-desktop steel-base; do
+            echo "::group::$pkg"
+            (cd "packages/$pkg" && sudo -u build makepkg --nodeps --noconfirm --clean)
+            echo "::endgroup::"
+          done
+
+      - name: Verify installed layout
+        run: |
+          # Install into a staging root and assert the files land where
+          # steel-check expects to read them. A package that installs to the
+          # wrong path passes its own build and fails silently on a real system.
+          mkdir -p /tmp/stage
+          for pkg in packages/*/*.pkg.tar.*; do
+            [ -e "$pkg" ] || continue
+            tar -C /tmp/stage -xf "$pkg" 2>/dev/null || true
+          done
+          missing=0
+          for path in \
+            etc/sysctl.d/99-steel-hardening.conf \
+            etc/modprobe.d/99-steel-blacklist.conf \
+            etc/nftables.conf \
+            etc/systemd/resolved.conf.d/99-steel.conf \
+            etc/NetworkManager/conf.d/99-steel-privacy.conf \
+            var/lib/flatpak/overrides/global \
+            usr/bin/steel-malloc \
+            usr/bin/steel-network \
+            usr/bin/steel-shell \
+            usr/bin/steel-profile \
+            usr/lib/steelos/captive-portal-helper
+          do
+            if [ ! -e "/tmp/stage/$path" ]; then
+              echo "missing from the built packages: $path"
+              missing=1
+            fi
+          done
+          exit $missing

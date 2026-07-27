@@ -1,0 +1,33 @@
+# Enabling the preload is done post-install rather than by shipping a file,
+# because /etc/ld.so.preload is a system-wide singleton that other packages also
+# write to. Overwriting it would be antisocial and would break whatever was
+# already there.
+
+post_install() {
+  steel-malloc enable
+  cat <<'MSG'
+
+steel-malloc: hardened_malloc is now preloaded (light variant).
+
+  This will break some games and a few proprietary applications, usually with
+  an immediate crash on startup. That is the allocator refusing something the
+  program did, not a bug in the program's normal operation — but the program
+  still does not run.
+
+  To exempt one program:      steel-malloc exempt /usr/bin/thing
+  To switch to strict:        steel-malloc variant full
+  To turn it off entirely:    steel-malloc disable
+
+MSG
+}
+
+post_upgrade() {
+  # Re-assert the preload: a previous version, or a user's edit, may have left
+  # the line pointing at a variant that no longer exists. A dangling preload is
+  # silently ignored by the loader, which is worse than being off.
+  steel-malloc repair
+}
+
+pre_remove() {
+  steel-malloc disable
+}

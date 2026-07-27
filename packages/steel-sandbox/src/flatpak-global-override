@@ -1,0 +1,56 @@
+# Global Flatpak permission override.
+#
+# Installed to /var/lib/flatpak/overrides/global, where it applies to every
+# application in the system installation, and is written to the per-user
+# installation as well by steel-sandbox.
+#
+# Why this file exists: Flatpak's out-of-the-box permissions are whatever the
+# application's manifest asked for, and a large fraction of popular applications
+# ask for `--filesystem=home` and `--device=all`. An application with home
+# access can read your SSH keys, your browser profile, your password store, and
+# every document you own — the sandbox is then decorative. Flathub's own
+# metadata marks many of these apps as having "unsandboxed" permissions, but
+# nothing enforces anything about it.
+#
+# The negations here revoke those permissions globally. Applications that
+# genuinely need one get it back per-app, from nothing, via
+# `flatpak override --user` or Flatseal (installed by default for exactly this
+# reason).
+#
+# Expect breakage, and expect it to be confusing (CLAUDE.md gotcha 10): the
+# usual symptom is a file dialog that shows an empty home directory, or an app
+# that starts and immediately cannot find its own data. The portal system is
+# what applications are supposed to use instead — a file chooser portal grants
+# access to the one file the user picked, without home access — but not every
+# application has been updated to use it.
+#
+# docs/escape-hatches.md maps the common symptoms to the specific grant needed.
+
+[Context]
+# Home and host access, revoked. This is the big one.
+filesystems=!home;!host;!host-os;!host-etc;
+
+# Device access covers /dev/video (webcam), /dev/snd, and raw USB. Granted back
+# per-app; the camera and microphone should be a decision, not a default.
+devices=!all;
+
+# X11 has no input isolation whatsoever: any X client can read every other
+# client's keystrokes. On a Wayland session there is no reason to hand it out.
+#
+# fallback-x11 is the subtle one — it silently reintroduces X11 whenever Wayland
+# negotiation fails, so an app that appears to be running under Wayland may not
+# be. Revoking both is the only way to be sure.
+sockets=!x11;!fallback-x11;
+
+# Network, revoked globally and granted back per-app. Most applications do not
+# need it, and the ones that do are obvious.
+shared=!network;
+
+# The session bus is a control channel to the rest of the desktop. Talking to
+# arbitrary services on it is a sandbox escape in slow motion.
+[Session Bus Policy]
+org.freedesktop.Flatpak=none
+org.freedesktop.impl.portal.PermissionStore=none
+
+[System Bus Policy]
+org.freedesktop.systemd1=none

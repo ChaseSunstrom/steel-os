@@ -1,0 +1,12 @@
+# Kernel command-line fragment required to enable AppArmor.
+#
+# AppArmor is not active unless the LSM list includes it AND it is selected.
+# Arch's default kernel builds it in but does not enable it, so installing the
+# apparmor package alone does nothing — a failure mode that is easy to miss
+# because everything appears installed and configured.
+#
+# The lsm= list is order-sensitive and must be complete: naming only apparmor
+# silently drops landlock, lockdown, yama, and integrity, which is how a
+# hardening change quietly turns off three other measures.
+
+lsm=landlock,lockdown,yama,integrity,apparmor apparmor=1 security=apparmor

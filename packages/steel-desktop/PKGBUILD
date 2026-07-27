@@ -1,0 +1,33 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-desktop
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS desktop defaults: removable-media mount policy, lock-on-suspend, privacy settings"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('systemd')
+optdepends=(
+  'udisks2: removable media mount policy applies to udisks-managed mounts'
+  'plasma-desktop: the desktop these defaults are written for'
+  'steel-check: verify the policy is in force'
+)
+backup=(
+  'etc/udisks2/mount_options.conf'
+  'etc/systemd/logind.conf.d/99-steel.conf'
+  'etc/xdg/kdeglobals'
+)
+source=(
+  'src/udisks2-mount-options.conf'
+  'src/logind-steel.conf'
+  'src/kdeglobals'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm644 "$srcdir/udisks2-mount-options.conf" \
+    "$pkgdir/etc/udisks2/mount_options.conf"
+  install -Dm644 "$srcdir/logind-steel.conf" \
+    "$pkgdir/etc/systemd/logind.conf.d/99-steel.conf"
+  install -Dm644 "$srcdir/kdeglobals" "$pkgdir/etc/xdg/kdeglobals"
+}

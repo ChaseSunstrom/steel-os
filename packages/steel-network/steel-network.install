@@ -1,0 +1,48 @@
+post_install() {
+  cat <<'MSG'
+
+steel-network: the ruleset is installed but NOT yet loaded.
+
+  Loading a default-deny ruleset over an active SSH session will disconnect
+  you, so this package refuses to do it for you. When you are at a console
+  you can recover from:
+
+      steel-network apply
+
+  Defaults once applied: inbound drop, forward drop, outbound allow, no
+  listening ports, DNS over TLS in strict mode, per-network stable MAC
+  addresses.
+
+  If a network appears broken after this, check the drop log before
+  disabling anything:
+
+      journalctl -k -g 'steel-fw drop-in'
+
+MSG
+}
+
+post_upgrade() {
+  if systemctl is-active --quiet nftables.service; then
+    # Validate before reloading: a rejected ruleset leaves the old one in
+    # place, which is the safe failure. A half-applied one is not.
+    if nft --check --file /etc/nftables.conf; then
+      nft --file /etc/nftables.conf
+      echo "steel-network: ruleset reloaded"
+    else
+      echo "steel-network: NEW RULESET FAILED VALIDATION — keeping the running one" >&2
+      echo "steel-network: fix /etc/nftables.conf and run 'steel-network apply'" >&2
+    fi
+  fi
+}
+
+pre_remove() {
+  cat <<'MSG'
+
+steel-network: removing this package does NOT flush the running ruleset.
+
+  The firewall stays as it is until the next reboot or an explicit
+  `nft flush ruleset`. That is deliberate: uninstalling a package should
+  not silently open a machine's inbound ports.
+
+MSG
+}

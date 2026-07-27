@@ -1,0 +1,42 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-sandbox
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS application confinement: Flatpak permission defaults, bubblejail profiles, steel-shell"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('bash')
+optdepends=(
+  'flatpak: the primary path for GUI applications'
+  'bubblejail: unprivileged confinement for native binaries'
+  'podman: required by steel-shell'
+  'flatseal: per-app permission editing, the escape hatch for the global overrides'
+  'steel-check: verify the overrides are actually in force'
+)
+# firejail is SUID root: a sandbox escape becomes a root escalation, which
+# inverts the property it claims to provide. Conflicting is a stronger statement
+# than documenting, and it is the honest one given the threat model.
+conflicts=('firejail')
+backup=('var/lib/flatpak/overrides/global')
+source=(
+  'src/flatpak-global-override'
+  'src/steel-shell'
+  'src/bubblejail/firefox.toml'
+  'src/bubblejail/generic-gui.toml'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+install=steel-sandbox.install
+
+package() {
+  install -Dm644 "$srcdir/flatpak-global-override" \
+    "$pkgdir/var/lib/flatpak/overrides/global"
+
+  install -Dm755 "$srcdir/steel-shell" "$pkgdir/usr/bin/steel-shell"
+
+  install -Dm644 "$srcdir/firefox.toml" \
+    "$pkgdir/usr/share/steel-sandbox/bubblejail/firefox.toml"
+  install -Dm644 "$srcdir/generic-gui.toml" \
+    "$pkgdir/usr/share/steel-sandbox/bubblejail/generic-gui.toml"
+}
