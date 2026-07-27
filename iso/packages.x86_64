@@ -1,0 +1,63 @@
+# Live installer environment.
+#
+# Kept small on purpose. Every package here is code running on an unconfigured
+# machine on an unknown network, before any of this project's protections
+# exist, and it is also the thing that has to boot on hardware we have never
+# seen.
+
+base
+linux
+linux-firmware
+archiso
+mkinitcpio-archiso
+
+# Installer
+calamares
+qt6-base
+kpmcore
+squashfs-tools
+rsync
+
+# A desktop, because a graphical installer needs one. Wayland, matching what
+# gets installed.
+plasma-desktop
+plasma-wayland-session
+sddm
+konsole
+dolphin
+firefox
+
+# Everything the installer's modules call into.
+sbctl
+tpm2-tools
+cryptsetup
+btrfs-progs
+erofs-utils
+dosfstools
+e2fsprogs
+gptfdisk
+systemd-ukify
+
+# SteelOS tooling, so the installed system's own tools do the work rather than
+# a parallel implementation that can drift.
+steel-check
+steel-config
+steel-boot
+steel-duress
+
+# Hardware diagnosis, for the machines where installation will not be simple.
+pciutils
+usbutils
+dmidecode
+efibootmgr
+inxi
+
+# Recovery, because a live ISO is also the tool people reach for when an
+# installed machine will not boot.
+restic
+borg
+age
+vim
+less
+man-db
+networkmanager

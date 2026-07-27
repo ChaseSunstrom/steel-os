@@ -1,0 +1,5 @@
+---
+type:       "view"
+name:       "bootsec"
+interface:  "python"
+script:     "main.py"

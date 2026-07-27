@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+#
+# steelos-check-hardware — tell the user, before they install, what will and
+# will not work on this machine.
+#
+# Everything reported here is a decision the installer would otherwise make
+# silently or discover too late. A machine with no TPM, vendor-locked Secure
+# Boot, or a GPU newer than the channel's kernel is installable — but the user
+# should know that going in, not afterwards.
+
+set -euo pipefail
+
+pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+
+printf '\n\033[1mSteelOS hardware check\033[0m\n\n'
+
+printf '\033[1mFirmware\033[0m\n'
+if [[ -d /sys/firmware/efi ]]; then
+  pass "UEFI boot"
+  sb=$(od -An -t u1 -j 4 -N 1 /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | tr -d ' ' || echo "")
+  setup=$(od -An -t u1 -j 4 -N 1 /sys/firmware/efi/efivars/SetupMode-* 2>/dev/null | tr -d ' ' || echo "")
+  case "$sb/$setup" in
+    1/*) warn "Secure Boot is ON. It must be in setup mode to enrol our keys.
+        Turn it off, or clear the platform key, then run the installer." ;;
+    0/1) pass "Secure Boot is off and firmware is in setup mode — keys can be enrolled" ;;
+    0/0) warn "Secure Boot is off but firmware is NOT in setup mode.
+        The installer will proceed and the post-install checklist will tell
+        you how to enter setup mode for this vendor." ;;
+    *)   warn "cannot read Secure Boot state" ;;
+  esac
+else
+  fail "Legacy BIOS boot. SteelOS needs UEFI: the whole verified boot chain
+        depends on it, and there is no BIOS equivalent."
+fi
+
+printf '\n\033[1mTPM\033[0m\n'
+if [[ -e /sys/class/tpm/tpm0 ]]; then
+  version=$(cat /sys/class/tpm/tpm0/tpm_version_major 2>/dev/null || echo "?")
+  if [[ $version == 2 ]]; then
+    pass "TPM 2.0 present — TPM+PIN unlock is available"
+  else
+    warn "TPM $version present, but TPM 2.0 is required. Unlock will be by
+        passphrase, which is the default and is not weaker against an
+        attacker who does not have your passphrase."
+  fi
+else
+  warn "No TPM. Unlock will be by passphrase — the default, and fine."
+fi
+
+printf '\n\033[1mCPU security features\033[0m\n'
+flags=$(grep -m1 '^flags' /proc/cpuinfo)
+if grep -q ' sme' <<<"$flags"; then
+  pass "AMD SME supported — enable TSME in firmware for memory encryption"
+elif grep -q ' tme' <<<"$flags"; then
+  pass "Intel TME supported — enable it in firmware"
+else
+  warn "No CPU memory encryption. Cold-boot and DMA attacks are correspondingly
+        easier; the IOMMU is the remaining defence."
+fi
+
+if grep -qE ' (vmx|svm)' <<<"$flags"; then
+  pass "Virtualisation extensions present"
+else
+  warn "No virtualisation extensions"
+fi
+
+printf '\n\033[1mIOMMU\033[0m\n'
+if dmesg 2>/dev/null | grep -qiE 'DMAR|AMD-Vi'; then
+  pass "IOMMU present in firmware"
+else
+  fail "No IOMMU detected. Enable VT-d or AMD-Vi in firmware setup.
+        Without it, any Thunderbolt or PCIe peripheral can read all of memory,
+        which defeats every software measure this system applies."
+fi
+
+printf '\n\033[1mGraphics\033[0m\n'
+while read -r line; do
+  case $line in
+    *10de*) warn "NVIDIA: $line
+        Modules are signed at image build time, so this is no longer a conflict.
+        Very new GPUs may need the testing channel." ;;
+    *1002*) pass "AMD: $line" ;;
+    *8086*) pass "Intel: $line" ;;
+    *)      warn "Unrecognised GPU: $line" ;;
+  esac
+done < <(lspci -nn | grep -E 'VGA|3D controller')
+
+printf '\n\033[1mDisk\033[0m\n'
+while read -r name size rota; do
+  local_note=""
+  [[ $rota == 0 ]] && local_note="SSD" || local_note="HDD"
+  size_gb=$((size / 1024 / 1024 / 1024))
+  if (( size_gb < 64 )); then
+    fail "/dev/$name is ${size_gb}G ($local_note) — below the 64G minimum.
+        Two 6G root slots, the decoy allocation, and a usable /var do not fit."
+  else
+    pass "/dev/$name is ${size_gb}G ($local_note)"
+  fi
+  if [[ $rota == 0 ]]; then
+    warn "  On an SSD, the flash translation layer remaps blocks invisibly.
+        This weakens deniability features (steel-vault especially) and no
+        software fix exists."
+  fi
+done < <(lsblk -bdno NAME,SIZE,ROTA | grep -vE 'loop|sr[0-9]')
+
+printf '\n\033[1mMemory\033[0m\n'
+mem_gb=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024 / 1024 ))
+if (( mem_gb >= 8 )); then
+  pass "${mem_gb}G RAM"
+else
+  warn "${mem_gb}G RAM. Plasma plus a browser plus hardened_malloc will be tight."
+fi
+
+printf '\n'
