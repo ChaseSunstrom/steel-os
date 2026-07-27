@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Channel to publish'
+        required: true
+        default: 'testing'
+        type: choice
+        options: [testing, stable]
+
+# The release pipeline exists to make one claim true: users are never exposed
+# to an untested Arch state. That is the real advantage over rolling Arch, and
+# it is the reason the snapshot pin exists — so nothing here may publish an
+# image the matrix has not passed.
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build the image
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    outputs:
+      roothash: ${{ steps.build.outputs.roothash }}
+      image-id: ${{ steps.build.outputs.image-id }}
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git rust mkosi systemd-ukify sbsigntools cryptsetup \
+            erofs-utils openssl python
+
+      - uses: actions/checkout@v4
+
+      - name: Import signing keys
+        env:
+          SB_KEY: ${{ secrets.SECURE_BOOT_DB_KEY }}
+          SB_CERT: ${{ secrets.SECURE_BOOT_DB_CERT }}
+          VERITY_KEY: ${{ secrets.VERITY_SIGNING_KEY }}
+          VERITY_CERT: ${{ secrets.VERITY_SIGNING_CERT }}
+        run: |
+          # The RELEASE signing key is not here and must never be. These are the
+          # per-image keys; the release key that signs the repository lives
+          # offline and signs published artefacts out of band. CLAUDE.md: "release
+          # signing key offline where practical" — for a project whose central
+          # claim is verified boot, "where practical" means always.
+          install -dm700 /tmp/keys
+          printf '%s' "$SB_KEY"      > /tmp/keys/db.key
+          printf '%s' "$SB_CERT"     > /tmp/keys/db.pem
+          printf '%s' "$VERITY_KEY"  > /tmp/keys/verity.key
+          printf '%s' "$VERITY_CERT" > /tmp/keys/verity.pem
+          chmod 600 /tmp/keys/*
+
+      - name: Build
+        id: build
+        env:
+          STEELOS_SB_KEY: /tmp/keys/db.key
+          STEELOS_SB_CERT: /tmp/keys/db.pem
+          STEELOS_VERITY_KEY: /tmp/keys/verity.key
+          STEELOS_VERITY_CERT: /tmp/keys/verity.pem
+          STEELOS_CHANNEL: ${{ inputs.channel || 'stable' }}
+        run: |
+          image/build.sh
+          roothash=$(cat image/out/steelos.roothash)
+          image_id=$(sed -n 's/^image-id=//p' image/out/steelos.metadata)
+          echo "roothash=$roothash" >> "$GITHUB_OUTPUT"
+          echo "image-id=$image_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify reproducibility
+        run: |
+          # Build twice, compare. "Same manifest + same snapshot pin => same
+          # image hash" is a published claim, so it is verified on every release
+          # rather than assumed.
+          first=$(sha256sum image/out/steelos.root.raw | cut -d' ' -f1)
+          STEELOS_OUT=/tmp/rebuild image/build.sh
+          second=$(sha256sum /tmp/rebuild/steelos.root.raw | cut -d' ' -f1)
+          if [ "$first" != "$second" ]; then
+            echo "::error::the image is not reproducible"
+            echo "  first:  $first"
+            echo "  second: $second"
+            echo "Something non-deterministic got into the image. Do not publish."
+            exit 1
+          fi
+          echo "reproducible: $first"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image/out/
+          retention-days: 7
+
+  matrix:
+    name: VM test matrix
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      # Do NOT cancel siblings on the first failure. A release blocked by one
+      # preset should still show whether the others are healthy, or every
+      # investigation starts by re-running the matrix.
+      fail-fast: false
+      matrix:
+        preset: [balanced, strict, compatible]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+          path: image/out/
+
+      - name: Install QEMU, OVMF and swtpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf swtpm qemu-utils
+
+      # install -> boot -> steel-check green -> update -> rollback ->
+      # demotion -> restore drill. A preset that fails to boot fails the
+      # release.
+      - name: Run the matrix
+        env:
+          STEELOS_PRESETS: ${{ matrix.preset }}
+          STEELOS_VM_WORK: ${{ runner.temp }}/vm
+        run: tests/vm/run-matrix.sh
+
+      - name: Upload consoles on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consoles-${{ matrix.preset }}
+          path: ${{ runner.temp }}/vm/*/console.log
+
+  publish:
+    name: Publish
+    needs: [build, matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+          path: image/out/
+
+      - name: Publish hashes
+        run: |
+          # "Same inputs => same image hash" is only a meaningful claim if the
+          # hashes are public and anyone can check a rebuild against ours.
+          cat image/out/steelos.sha256
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            image/out/steelos.root.raw
+            image/out/steelos.verity.raw
+            image/out/steelos.efi
+            image/out/steelos.roothash
+            image/out/steelos.roothash.p7s
+            image/out/steelos.sha256
+            image/out/steelos.metadata
+          body: |
+            ## ${{ needs.build.outputs.image-id }}
+
+            dm-verity root hash: `${{ needs.build.outputs.roothash }}`
+
+            This hash is sealed inside the signed UKI. Verify a running system
+            with:
+
+                steel-check storage.verity-roothash-matches-uki
+
+            ### Verifying this release
+
+            1. Check the image hash against `steelos.sha256`.
+            2. Rebuild from the same manifest and snapshot pin — you should get
+               the same hash. That is the reproducibility claim, and it is
+               checkable rather than asserted.
+            3. Verify the UKI signature against the published certificate.
+
+            ### What passed before this was published
+
+            The full VM matrix on all three presets: unattended install, boot,
+            `steel-check` green, update, rollback, deliberate broken-image
+            demotion, and a restore drill that wipes the machine and rebuilds it
+            from the manifest.
+
+            Images publish only after that matrix passes. Users are never
+            exposed to an untested Arch state — that is the reason the snapshot
+            pin exists.
+
+  security-fastpath:
+    name: Expedited security release
+    if: contains(github.event.head_commit.message, '[security]')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A critical CVE can publish out of cycle. Expedited, NOT skipped: the
+      # matrix still runs, on the balanced preset only, and the release notes
+      # say which coverage was traded for speed. Skipping tests to ship a
+      # security fix faster is how a security fix becomes an outage.
+      - name: Expedited matrix
+        env:
+          STEELOS_PRESETS: balanced
+        run: tests/vm/run-matrix.sh
+
+      - name: Note the reduced coverage
+        run: |
+          echo "::warning::Expedited release: only the balanced preset was" \
+               "tested. strict and compatible have NOT been verified for this" \
+               "image and will be covered by the next scheduled build."

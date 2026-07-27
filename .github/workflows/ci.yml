@@ -52,6 +52,44 @@ jobs:
       - name: Audit assertions
         run: tests/audit/run.sh
 
+  installer:
+    name: Installer modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The comprehension check is the whole point of the threatened-user step.
+      # Its logic decides whether someone has read limits that describe
+      # irreversible, sometimes legal, consequences — so it gets a regression
+      # test like anything else that matters.
+      - name: Comprehension and validation logic
+        run: python3 calamares/modules/threatened/test_comprehension.py
+
+      - name: Modules parse
+        run: |
+          for module in calamares/modules/*/main.py; do
+            python3 -c "import ast,sys; ast.parse(open('$module').read())" \
+              || { echo "syntax error in $module"; exit 1; }
+          done
+
+  timing:
+    name: Unlock-path timing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # CLAUDE.md: "Test this with a timing harness in CI, not by inspection."
+      #
+      # A comparison that returns early on the first differing byte looks fine
+      # in review and leaks the matching prefix length over a few hundred
+      # attempts. Only measurement finds that, and the whole deniability design
+      # assumes an examiner cannot tell which credential was entered.
+      - name: Measure the credential paths
+        run: STEELOS_TIMING_SAMPLES=300 tests/vm/timing-harness.sh
+
   shell:
     name: Shell scripts
     runs-on: ubuntu-latest
@@ -68,7 +106,7 @@ jobs:
           # breaks package installation with no useful message.
           find tools packages tests -type f \
             \( -name '*.sh' -o -name '*.install' -o -perm -u+x \) \
-            ! -path '*/target/*' -print0 \
+            ! -path '*/target/*' ! -path '*/out/*' -print0 \
           | xargs -0 --no-run-if-empty file --mime-type \
           | grep -E 'x-shellscript|x-sh' \
           | cut -d: -f1 \
@@ -112,7 +150,9 @@ jobs:
           # steel-check needs the Rust workspace and is built in the job above;
           # here we verify the config packages actually assemble.
           for pkg in steel-kernel-hardening steel-malloc steel-network \
-                     steel-sandbox steel-apparmor steel-desktop steel-base; do
+                     steel-sandbox steel-apparmor steel-desktop steel-identity \
+                     steel-backup steel-duress steel-custody steel-vault \
+                     steel-boot steel-base; do
             echo "::group::$pkg"
             (cd "packages/$pkg" && sudo -u build makepkg --nodeps --noconfirm --clean)
             echo "::endgroup::"
@@ -140,7 +180,17 @@ jobs:
             usr/bin/steel-network \
             usr/bin/steel-shell \
             usr/bin/steel-profile \
-            usr/lib/steelos/captive-portal-helper
+            usr/lib/steelos/captive-portal-helper \
+            usr/bin/steel-boot \
+            usr/bin/steel-duress \
+            usr/bin/steel-decoy \
+            usr/bin/steel-backup \
+            usr/bin/steel-custody \
+            usr/bin/steel-vault \
+            usr/bin/steel-profile-manager \
+            usr/lib/steelos/boot-complete-health.sh \
+            usr/lib/systemd/system/steel-boot-complete.service \
+            usr/lib/systemd/user/steel-backup.timer
           do
             if [ ! -e "/tmp/stage/$path" ]; then
               echo "missing from the built packages: $path"
@@ -148,3 +198,59 @@ jobs:
             fi
           done
           exit $missing
+
+  universal-shipping:
+    name: Duress components ship unconditionally
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # CLAUDE.md gotcha 21: "Universal shipping of duress code is a hard
+      # requirement, not a preference. Any conditional file, unit, or log line
+      # that reveals configuration state defeats the deniability design. Audit
+      # for this specifically."
+      #
+      # This is that audit. It is cheap and it catches the one class of change
+      # that silently destroys the property: someone making an install
+      # conditional because it seemed tidier.
+      - name: steel-base depends on steel-duress
+        run: |
+          grep -q "'steel-duress'" packages/steel-base/PKGBUILD \
+            || { echo "steel-duress is not a hard dependency of steel-base."; \
+                 echo "A duress package installed only by people who want duress"; \
+                 echo "features makes its own presence the evidence."; exit 1; }
+
+      - name: The initramfs hook install is unconditional
+        run: |
+          # No `if`, no test, no conditional install in the packaging path.
+          if grep -nE '^\s*(if|\[\[|test )' packages/steel-duress/PKGBUILD; then
+            echo "packages/steel-duress/PKGBUILD contains a conditional."
+            echo "Every install must get identical files, or the ones that differ"
+            echo "identify the machines that configured something."
+            exit 1
+          fi
+
+      - name: The hook has no early return
+        run: |
+          # An early return on an unconfigured machine would make it measurably
+          # faster than a configured one.
+          if grep -nE '^\s*return\s*$|^\s*exit 0' packages/steel-duress/src/initcpio-hook; then
+            echo "The initramfs hook returns early."
+            echo "On an unconfigured machine it must do the SAME work and take the"
+            echo "SAME time as on a configured one."
+            exit 1
+          fi
+
+      - name: No plaintext duress configuration paths
+        run: |
+          # steel-check audits the running system for this; this audits the
+          # source, so a leak cannot be introduced and shipped in one commit.
+          for forbidden in '/etc/steelos/duress.conf' '/etc/steelos/decoy.conf' \
+                           '/efi/steelos/duress'; do
+            if grep -rn --include='*.sh' --include='steel-*' --include='PKGBUILD' \
+                 -F "$forbidden" packages/ tools/ | grep -v 'PLAINTEXT_LEAK_PATHS' \
+                 | grep -v '^\s*#'; then
+              echo "Source writes duress configuration to a plaintext path: $forbidden"
+              exit 1
+            fi
+          done
