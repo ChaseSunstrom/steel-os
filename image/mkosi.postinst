@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#
+# Runs inside the image after packages are installed, before it is sealed.
+#
+# Everything here has to be deterministic. This script runs once per build and
+# its output is hashed into the root hash, so anything that varies between runs
+# — a timestamp, a random ID, a directory iteration order — breaks the
+# reproducibility claim in a way that is very hard to track down later.
+
+set -euo pipefail
+
+note() { printf 'postinst: %s\n' "$*" >&2; }
+
+# --- Filesystem layout --------------------------------------------------------
+#
+# Everything writable becomes a symlink into /var. This is what makes "the set
+# of places an attacker can persist into is small and enumerable" a checkable
+# statement rather than an aspiration.
+
+note "redirecting writable paths to /var"
+for dir in opt srv; do
+  rm -rf "/$dir"
+  ln -s "var/$dir" "/$dir"
+done
+
+# /etc is an overlay at runtime, reconciled from the manifest. The image ships
+# the defaults; steelctl applies the deltas.
+mkdir -p /usr/share/factory/etc
+cp -a /etc/. /usr/share/factory/etc/
+
+# --- Module signing -----------------------------------------------------------
+#
+# Out-of-tree modules are signed HERE, at image build time, with the key that
+# also signs the UKI. This is what lets lockdown=confidentiality and
+# module.sig_enforce=1 be defaults without breaking NVIDIA — there is no
+# DKMS-at-runtime path, and that is a feature.
+
+if [[ -n ${STEELOS_MODULE_SIGN_KEY:-} ]]; then
+  note "signing out-of-tree modules"
+  kver=$(basename /usr/lib/modules/*/ | head -1)
+  # Sorted, so the build is deterministic regardless of readdir order.
+  find "/usr/lib/modules/$kver" -name '*.ko*' -print0 | sort -z | while IFS= read -r -d '' mod; do
+    /usr/lib/modules/"$kver"/build/scripts/sign-file sha256 \
+      "$STEELOS_MODULE_SIGN_KEY" "$STEELOS_MODULE_SIGN_CERT" "$mod" 2>/dev/null || true
+  done
+fi
+
+# --- Deterministic caches -----------------------------------------------------
+
+note "rebuilding caches deterministically"
+ldconfig
+# The font and mime caches embed build order; regenerating them with a fixed
+# locale and a sorted input keeps them stable.
+LC_ALL=C fc-cache --system-only --force 2>/dev/null || true
+LC_ALL=C update-mime-database /usr/share/mime 2>/dev/null || true
+
+# --- Universal duress components ----------------------------------------------
+#
+# CLAUDE.md gotcha 21: universal shipping is a hard requirement, not a
+# preference. These exist in EVERY image, active or not. Finding them proves
+# only that the machine runs SteelOS.
+#
+# There must be no conditional file, unit, journal entry, or steel-check output
+# difference that distinguishes "duress configured" from "duress not configured"
+# to anyone who has not unlocked the real volume.
+
+note "verifying the universal duress components are present"
+for path in \
+  /usr/lib/initcpio/hooks/steel-duress \
+  /usr/lib/initcpio/install/steel-duress \
+  /usr/lib/steelos/maintenance-boot
+do
+  [[ -e $path ]] || { echo "postinst: MISSING universal component: $path" >&2; exit 1; }
+done
+
+# --- Identity -----------------------------------------------------------------
+#
+# No machine-id in the image. It is generated per installed machine at first
+# boot — which is also required by the deniability design: two volumes must look
+# like two machines, and a machine-id baked into a shared image makes them look
+# like one.
+
+rm -f /etc/machine-id /var/lib/dbus/machine-id
+: > /etc/machine-id
+
+# Host keys likewise. sshd is not installed, but the directory is created by
+# other packages and an image-wide host key would be a shared identifier.
+rm -f /etc/ssh/ssh_host_*
+
+# --- Sanity ------------------------------------------------------------------
+
+note "checking the image has no writable system paths"
+if find /usr -type d -perm -0002 -print -quit | grep -q .; then
+  echo "postinst: world-writable directory in /usr" >&2
+  exit 1
+fi
+
+note "done"

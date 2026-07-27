@@ -1,0 +1,60 @@
+# The manifest that produces the stock SteelOS image.
+#
+# This file is the system. Two machines with the same manifest and the same
+# snapshot pin are the same machine — that is the claim, and `steelctl history`
+# records the hash of this file with every generation so the claim is checkable.
+#
+# Users version-control their own copy at /etc/steelos/manifest.toml.
+
+[system]
+channel   = "stable"       # stable | testing
+snapshot  = "2026-07-20"   # Arch Linux Archive pin. NOT optional: building
+                           # against "current" makes reproducibility a lie.
+hardening = "balanced"     # balanced | strict | compatible
+kernel    = "linux-hardened"
+
+[packages]
+# Baked into the verified image. Changing this list requires a rebuild and a
+# reboot, so it should hold only what genuinely cannot live elsewhere: the
+# kernel, drivers, the base system, and the hardening posture.
+#
+# If your need is met by Flatpak, a container, or a signed sysext, it does NOT
+# belong here. Getting this wrong is what makes an immutable OS feel hostile.
+system = [
+  "firefox",
+  "neovim",
+  "git",
+  "podman",
+  "distrobox",
+]
+
+[flatpak]
+# Installed per-user on first login. Instant, sandboxed, and no rebuild — this
+# is where applications belong.
+user = [
+  "org.mozilla.firefox",
+  "com.github.tchx84.Flatseal",   # the escape hatch for the global permission
+                                  # overrides; shipped by default because a
+                                  # revocation with no discoverable way to grant
+                                  # things back is a trap
+]
+
+[services]
+enable  = []
+disable = ["bluetooth"]
+
+[backup]
+enabled   = true
+# No target may live on the device being protected. steel-backup enforces this
+# in code; a local btrfs snapshot is a convenience rollback and is never counted
+# as a backup.
+targets   = []
+schedule  = "daily"
+retention = "7d 4w 6m"
+
+# Per-user configuration is written by the installer's Profiles step. Example:
+#
+# [users.chase]
+# storage       = "luks"
+# sandbox       = "strict"
+# tunnel_policy = "rotate-3d"
