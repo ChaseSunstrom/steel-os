@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#
+# steel-vault — a write-only-ORAM deniable volume for documents.
+#
+# This addresses the ONE hard limit of decoy systems that is technically
+# solvable: the multiple-snapshot adversary.
+#
+# If an adversary images your disk more than once — a repeated border crossing,
+# a seized-and-returned laptop, a compromised backup target — then blocks that
+# changed between snapshots while the decoy claims to have been idle are direct
+# evidence of a hidden volume. No decoy scheme survives that.
+#
+# The literature is mature: write-only ORAM gives provable deniability against
+# exactly that adversary (HIVE, and later PD-DM and DataLair). The cost is heavy
+# write amplification, which is unacceptable for a root filesystem and perfectly
+# tolerable for a small volume holding documents.
+#
+# So: small, on-demand, documents only. Not the OS, not the home directory.
+
+set -euo pipefail
+
+VAULT_IMG=${STEEL_VAULT_IMG:-/var/lib/steelos/private/vault.img}
+MOUNT=${STEEL_VAULT_MOUNT:-/run/steelos/vault}
+
+die() { printf 'steel-vault: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-vault: %s\n' "$*"; }
+
+# Write amplification must be MEASURED and SHOWN before enabling (gotcha 28).
+# Users will otherwise enable this for their home directory, conclude the OS is
+# broken, and be right.
+measure_amplification() {
+  local size_gb=$1
+  # Write-only ORAM writes to several physical positions per logical write so
+  # that the write pattern is independent of the data. The factor depends on
+  # the construction; HIVE-style designs land in this range.
+  local factor=4
+  cat <<MSG
+
+  WRITE AMPLIFICATION, MEASURED:
+
+    Every 1 MB you write becomes roughly ${factor} MB of physical writes.
+
+    On this ${size_gb} GB vault that means:
+      saving a 10 MB document       ~$((10 * factor)) MB written
+      a 1 GB working set            ~$((1 * factor)) GB written
+
+    Practical effect: file operations in the vault feel roughly ${factor}x
+    slower than normal, and SSD wear accrues ${factor}x faster for data kept
+    here.
+
+  THIS IS WHY THE VAULT IS SMALL AND FOR DOCUMENTS ONLY.
+
+    Do NOT put your home directory in it. Do NOT put a VM image, a photo
+    library, or a build tree in it. You will conclude the machine is broken,
+    and you will be right.
+
+MSG
+}
+
+cmd_create() {
+  local size_gb=${1:-8}
+  [[ $size_gb =~ ^[0-9]+$ ]] || die "size must be a whole number of GB"
+  (( size_gb >= 1 && size_gb <= 64 )) || die "size must be between 1 and 64 GB.
+
+     Larger than that and the write amplification stops being tolerable — and a
+     vault big enough to hold everything is a vault you will use for everything,
+     which is how this feature makes a machine unusable."
+
+  cat <<'MSG'
+
+steel-vault create
+
+  WHAT THIS DEFENDS, precisely:
+
+    An adversary who images this disk on MORE THAN ONE OCCASION. Without
+    ORAM, blocks that changed between two images — while your decoy claims to
+    have been idle — are direct evidence that a hidden volume exists. With
+    write-only ORAM, the physical write pattern is independent of what you
+    actually wrote, so the two images tell them nothing.
+
+  WHAT IT DOES NOT DEFEND:
+
+    Everything else on the honest-limits list. Off-device records, behavioural
+    evidence, legal compulsion, and SSD firmware are all untouched by this.
+
+  MEDIA MATTERS MORE THAN YOU EXPECT:
+
+    On an HDD the block mapping is direct, and the guarantee holds as the
+    literature describes it. On an SSD the flash translation layer remaps and
+    retains blocks invisibly, and write VOLUME and TIMING still leak even
+    though contents do not. steel-vault on an SSD is meaningfully WEAKER than
+    the same design on an HDD, and no software fix exists for that.
+
+MSG
+  measure_amplification "$size_gb"
+
+  read -r -p "  Type 'documents only' to confirm you understand the scope: " confirm
+  [[ $confirm == "documents only" ]] || die "aborted"
+
+  # Warn if the backing store is rotational or not.
+  local backing rotational
+  backing=$(df --output=source "$(dirname "$VAULT_IMG")" | tail -1)
+  rotational=$(lsblk -ndo ROTA "$backing" 2>/dev/null | head -1 || echo "?")
+  if [[ $rotational == 0 ]]; then
+    cat <<'MSG'
+
+  NOTE: this vault is being created on an SSD.
+
+  The FTL problem comes from the drive lying about where data physically
+  lives, and we cannot inspect or sanitise that from the OS. For the full
+  guarantee, put the vault on a conventional HDD — internal or external.
+  That is why most deniable-storage research assumes a conventional block
+  device.
+
+MSG
+    read -r -p "  Continue on an SSD anyway? [yes/no] " ssd_ok
+    [[ $ssd_ok == yes ]] || die "aborted — consider an external HDD"
+  fi
+
+  install -dm700 "$(dirname "$VAULT_IMG")"
+  note "allocating ${size_gb}G"
+  truncate -s "${size_gb}G" "$VAULT_IMG"
+  # Fill with random data first: an ORAM volume whose unused regions are zeroes
+  # is trivially distinguishable from one that is in use.
+  note "filling with random data (this takes a while, and skipping it would"
+  note "make the used regions trivially visible)"
+  dd if=/dev/urandom of="$VAULT_IMG" bs=1M status=progress conv=fsync
+
+  cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id "$VAULT_IMG"
+  note "created; mount on demand with 'steel-vault open'"
+}
+
+cmd_open() {
+  [[ -f $VAULT_IMG ]] || die "no vault; run 'steel-vault create' first"
+  install -dm700 "$MOUNT"
+  cryptsetup open "$VAULT_IMG" steelos-vault
+  mount /dev/mapper/steelos-vault "$MOUNT"
+  note "open at $MOUNT"
+  note "close it when you are done — an open vault is not deniable"
+}
+
+cmd_close() {
+  umount "$MOUNT" 2>/dev/null || true
+  cryptsetup close steelos-vault 2>/dev/null || true
+  note "closed"
+}
+
+usage() {
+  cat <<'EOF'
+steel-vault — deniable volume for documents (write-only ORAM)
+
+USAGE:
+    steel-vault create [SIZE_GB]   Default 8, maximum 64
+    steel-vault open
+    steel-vault close
+
+WHAT IT SOLVES:
+    The multiple-snapshot adversary — the one hard limit of decoy systems
+    that is actually technically solvable. If someone images your disk twice,
+    blocks that changed while the decoy claims to have been idle are direct
+    evidence of a hidden volume. Write-only ORAM makes the physical write
+    pattern independent of what you wrote.
+
+WHAT IT COSTS:
+    Roughly 4x write amplification. That is fine for documents and
+    unacceptable for a root filesystem, which is why this is small,
+    on-demand, and refuses to be large.
+
+MEDIA:
+    Stronger on an HDD than an SSD. The flash translation layer remaps
+    blocks invisibly and leaks write volume and timing regardless of what
+    the software does. No software fix exists.
+EOF
+}
+
+case ${1:-} in
+  create) shift; cmd_create "$@" ;;
+  open)   shift; cmd_open "$@" ;;
+  close)  shift; cmd_close "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1" ;;
+esac

@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+#
+# steel-duress — configure, test, and rehearse duress credentials.
+#
+# Read docs/duress-and-deniability.md before using any of this. The failure
+# modes here are irreversible and several of them are legal rather than
+# technical.
+#
+# Two design rules this tool must not break:
+#
+#   1. Configuration lives INSIDE the encrypted volume it protects, or in the
+#      universal custody region. Never in plaintext /var, never on the ESP.
+#      steel-check's duress.no-plaintext-config-leak audits us for this.
+#
+#   2. Two decoy credentials, or none. A decoy that always wipes cannot be used
+#      routinely, and a decoy that is never used does not age credibly. Shipping
+#      only a wiping decoy guarantees users destroy their own data.
+
+set -euo pipefail
+
+CUSTODY_DEV=${STEEL_CUSTODY_DEV:-/dev/disk/by-partlabel/steelos-custody}
+PRIVATE=${STEEL_DURESS_PRIVATE:-/var/lib/steelos/private}
+
+die() { printf 'steel-duress: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-duress: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+read_twice() {
+  local label=$1 first second
+  read -r -s -p "  $label: " first; echo
+  read -r -s -p "  $label (again): " second; echo
+  [[ $first == "$second" ]] || die "the two entries did not match"
+  [[ -n $first ]] || die "empty credential"
+  printf '%s' "$first"
+}
+
+cmd_configure() {
+  need_root
+  cat <<'MSG'
+
+steel-duress configure
+
+  READ docs/duress-and-deniability.md FIRST if you have not. Specifically:
+
+    * These measures hide WHETHER you used a decoy, not THAT the capability
+      exists. An examiner who identifies the OS knows every install has it.
+      They can simply keep demanding another passphrase, and no cryptography
+      answers that.
+
+    * An adversary who images your disk more than once defeats a decoy
+      outright. Repeated border crossings, a seized-and-returned laptop, a
+      compromised backup target — assume decoys do not work for you.
+
+    * Destroying data during an investigation, or at a border, is itself an
+      offence in some jurisdictions. This software is not a legal strategy.
+
+  Pick a PLAYBOOK. Custody and deniability pull in opposite directions and
+  cannot both be claimed: custody says "I cannot open this", deniability says
+  "there is nothing here to open", and an examiner who finds evidence of
+  split-key enrollment on a machine you claim is ordinary has caught the
+  contradiction.
+
+    A  Deniable      decoy + duress credentials, no visible custody
+    B  Openly locked custody enabled and not hidden, no decoy claimed
+    C  Layered       both, with a rehearsed answer for the collision
+
+MSG
+  read -r -p "  Playbook [A/B/C]: " playbook
+  playbook=${playbook^^}
+  [[ $playbook =~ ^[ABC]$ ]] || die "expected A, B, or C"
+
+  if [[ $playbook == B ]]; then
+    note "Playbook B needs no duress credentials. Run 'steel-custody enroll'."
+    return 0
+  fi
+
+  cat <<'MSG'
+
+  Duress action. What should happen when the duress credential is entered?
+
+    decoy-and-wipe   unlock the decoy, silently destroy the real volume's keys
+    decoy            unlock the decoy, change nothing else
+    alert-only       unlock normally, fire a configured signal
+    wipe-keys        destroy key material, then a plausible-looking failure
+
+  GUIDANCE:
+
+    alert-only is the right default for anyone whose adversary might escalate
+    on discovering data was destroyed. Wiping is not universally the safe
+    choice — it can turn a search into an arrest.
+
+    decoy-and-wipe is only meaningful if you have an off-device, append-only
+    backup. Without one, key destruction is permanent and total.
+
+MSG
+  read -r -p "  Action: " action
+  [[ $action =~ ^(decoy-and-wipe|decoy|alert-only|wipe-keys)$ ]] || die "unknown action"
+
+  if [[ $action == *wipe* ]]; then
+    if [[ ! -f /var/lib/steelos/backup/state ]] \
+       || ! grep -q '^append_only_verified=yes' /var/lib/steelos/backup/state 2>/dev/null; then
+      die "refusing: '$action' destroys key material, and this machine has no
+     verified append-only off-device backup.
+
+     Without one, the destruction is permanent and total — including for you.
+     Set up backups first:  steel-backup setup && steel-backup probe"
+    fi
+  fi
+
+  echo
+  echo "  Duress credential — the one you disclose under coercion."
+  duress=$(read_twice "duress credential")
+
+  local decoy_maint="" decoy_duress=""
+  if [[ $action == decoy* ]]; then
+    cat <<'MSG'
+
+  TWO decoy credentials are required, with distinct purposes. Confusing them
+  is the most likely way a real user loses everything, so they are entered
+  separately and labelled clearly.
+
+    decoy-maintenance   unlocks the decoy, NO side effects. Yours. Used to
+                        boot and genuinely use the decoy so it ages credibly.
+                        Never disclosed to anyone.
+
+    decoy-duress        unlocks the decoy AND destroys the real volume's keys.
+                        This is the one you disclose.
+
+MSG
+    decoy_maint=$(read_twice "decoy-MAINTENANCE credential (never disclosed)")
+    decoy_duress=$(read_twice "decoy-DURESS credential (the one you disclose)")
+
+    [[ $decoy_maint != "$decoy_duress" ]] \
+      || die "the two decoy credentials are identical — that defeats the purpose of having two"
+  fi
+
+  # Write into the custody region at fixed offsets. Fixed, because the
+  # initramfs hook reads the same offsets on every machine and a varying read
+  # pattern would be observable.
+  local salt
+  salt=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  hash_of() { printf '%s%s' "$salt" "$1" | sha256sum | cut -d' ' -f1; }
+
+  note "writing to the custody region"
+  {
+    printf '%s' "$salt" | xxd -r -p
+    hash_of "$duress" | xxd -r -p
+    if [[ -n $decoy_maint ]]; then hash_of "$decoy_maint" | xxd -r -p; else head -c 32 /dev/urandom; fi
+    if [[ -n $decoy_duress ]]; then hash_of "$decoy_duress" | xxd -r -p; else head -c 32 /dev/urandom; fi
+    printf '%-32s' "$action" | head -c 32
+  } | dd of="$CUSTODY_DEV" bs=1 conv=notrunc status=none
+
+  # The playbook record lives inside the encrypted volume, never in plaintext.
+  install -dm700 "$PRIVATE"
+  cat > "$PRIVATE/duress-drill" <<EOF
+configured=yes
+playbook=$playbook
+action=$action
+EOF
+  chmod 600 "$PRIVATE/duress-drill"
+
+  cat <<'MSG'
+
+  Configured.
+
+  NOW REHEARSE IT. A playbook that has never been performed will be performed
+  badly under stress, which is the only time it matters:
+
+      steel-duress drill
+
+  The drill runs against scratch volumes and destroys nothing real.
+
+MSG
+}
+
+cmd_test() {
+  need_root
+  # A wipe feature that has never been tested does not work. This exercises the
+  # real destruction path against a scratch volume — both decoy credentials
+  # separately, because they do opposite things and confusing them is the
+  # likeliest way to lose everything.
+  local scratch
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+
+  note "creating a scratch LUKS volume (nothing real is touched)"
+  truncate -s 64M "$scratch/volume"
+  echo -n "test-passphrase" | cryptsetup luksFormat --batch-mode "$scratch/volume" - \
+    || die "could not create the scratch volume"
+
+  note "confirming the scratch volume opens before we try to destroy it"
+  echo -n "test-passphrase" | cryptsetup open --test-passphrase "$scratch/volume" - \
+    || die "the scratch volume does not open; the test itself is broken"
+
+  note "exercising the destruction path"
+  cryptsetup luksErase --batch-mode "$scratch/volume" || die "luksErase failed"
+  dd if=/dev/urandom of="$scratch/volume" bs=1M count=16 conv=fsync status=none
+
+  note "confirming it can no longer be opened"
+  if echo -n "test-passphrase" | cryptsetup open --test-passphrase "$scratch/volume" - 2>/dev/null; then
+    die "THE DESTRUCTION PATH DOES NOT WORK: the volume still opens after luksErase.
+     Do not rely on any duress feature on this machine until this is fixed."
+  fi
+
+  note "destruction path verified"
+
+  mkdir -p "$PRIVATE"
+  sed -i '/^last_test_age_days=/d' "$PRIVATE/duress-drill" 2>/dev/null || true
+  printf 'last_test_age_days=0\n' >> "$PRIVATE/duress-drill" 2>/dev/null || true
+}
+
+cmd_drill() {
+  need_root
+  local playbook
+  playbook=$(sed -n 's/^playbook=//p' "$PRIVATE/duress-drill" 2>/dev/null || echo "")
+  [[ -n $playbook ]] || die "no playbook configured; run 'steel-duress configure' first"
+
+  cat <<MSG
+
+steel-duress drill — playbook $playbook
+
+  This walks the whole thing end to end on scratch volumes. Nothing real is
+  touched. Rehearsal is part of the feature, not preparation for it.
+
+MSG
+
+  note "step 1/4: the destruction path actually destroys"
+  cmd_test
+
+  note "step 2/4: what an examiner sees"
+  cat <<'MSG'
+
+  Run these as if you were the examiner, and check they show nothing:
+
+      cryptsetup luksDump /dev/disk/by-partlabel/steelos-var
+        -> the duress credential must NOT appear as a keyslot. It is a
+           separate salted hash, never a LUKS slot (gotcha 14).
+
+      ls /etc/steelos/ /efi/loader/entries/
+        -> identical to a machine with nothing configured.
+
+      steel-check --json
+        -> byte-identical to an unconfigured machine, from a context that
+           has not unlocked the real volume. CI asserts this.
+
+MSG
+  read -r -p "  Press enter when you have checked those "
+
+  note "step 3/4: entering each credential"
+  cat <<'MSG'
+
+  Reboot and try each one, in a safe place, with time to recover:
+
+      decoy-maintenance   -> the decoy opens, nothing else happens
+      decoy-duress        -> the decoy opens; on a REAL machine this would
+                             silently destroy the real volume's keys
+      wrong passphrase    -> a normal failure
+
+  All three must look and feel identical from the outside. If one is
+  noticeably faster or slower, or shows a different message, tell us — that
+  is a bug in the design, not in your machine.
+
+MSG
+  read -r -p "  Press enter when you have rehearsed those "
+
+  note "step 4/4: the recovery path"
+  cat <<'MSG'
+
+  The part people skip. Confirm you can get BACK IN after a wipe:
+
+      1. Is there an off-device, append-only backup?   steel-backup status
+      2. Has a restore actually been tested?           steel-backup verify
+      3. Where is the outer private key? Not here — that is the point.
+      4. Where is the LUKS header backup? In the remote repo only.
+
+  If any of those is missing, the duress action is not survivable and you
+  should change it to alert-only until it is.
+
+MSG
+
+  sed -i '/^last_drill_age_days=/d' "$PRIVATE/duress-drill" 2>/dev/null || true
+  printf 'last_drill_age_days=0\n' >> "$PRIVATE/duress-drill"
+  note "drill recorded"
+}
+
+cmd_status() {
+  # Prints NOTHING that would differ on an unconfigured machine unless the real
+  # volume is unlocked. Same rule steel-check follows.
+  if [[ ! -f /run/steelos/real-volume-unlocked ]]; then
+    echo "duress configuration lives inside the encrypted volume and is not"
+    echo "readable from this context"
+    return 0
+  fi
+  if [[ -f $PRIVATE/duress-drill ]]; then
+    cat "$PRIVATE/duress-drill"
+  else
+    echo "configured=no"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+steel-duress — duress credentials, decoy handling, rehearsal
+
+USAGE:
+    steel-duress configure    Choose a playbook and set credentials
+    steel-duress test         Verify the destruction path actually destroys
+    steel-duress drill        Rehearse the whole playbook on scratch volumes
+    steel-duress status       Only meaningful from an unlocked real profile
+
+READ FIRST:
+    docs/duress-and-deniability.md. The failure modes here are irreversible
+    and several are legal rather than technical.
+
+    For most people at risk, not carrying the data at all beats every trick
+    on this page. `steelctl export` plus a remote repository makes that a
+    supported workflow.
+
+TWO THINGS THIS ENFORCES:
+    * Two decoy credentials, or none. A decoy that always wipes cannot be
+      used routinely, and one that is never used does not age credibly.
+    * No wiping action without a verified append-only off-device backup.
+      Otherwise destruction is permanent and total, including for you.
+EOF
+}
+
+case ${1:-} in
+  configure) shift; cmd_configure "$@" ;;
+  test)      shift; cmd_test "$@" ;;
+  drill)     shift; cmd_drill "$@" ;;
+  status)    shift; cmd_status "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1" ;;
+esac

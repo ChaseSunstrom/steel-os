@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# mkinitcpio install hook for steel-duress.
+#
+# Adds the hook and the binaries it needs to EVERY initramfs. Not conditional on
+# configuration: an initramfs whose size or contents differed between a
+# configured and an unconfigured machine would be the tell that the design
+# exists to prevent.
+
+build() {
+    add_binary cryptsetup
+    add_binary dd
+    add_binary od
+    add_binary sha256sum
+    add_binary blkdiscard
+    add_binary poweroff
+    # tpm2_nvundefine may be absent on machines with no TPM; adding it
+    # unconditionally keeps the initramfs identical across hardware where it
+    # can, and its absence is a property of the hardware rather than of the
+    # configuration.
+    add_binary tpm2_nvundefine 2>/dev/null || true
+
+    add_runscript
+}
+
+help() {
+    cat <<'HELPEOF'
+Duress credential handling.
+
+This hook is present in every SteelOS initramfs, whether or not duress
+credentials are configured. That is deliberate and is not optional: a hook
+installed only on configured machines would make its own presence the
+evidence an examiner is looking for.
+
+On a machine with nothing configured it reads the same bytes, performs the
+same comparisons against random data, matches nothing, and falls through to
+the normal unlock — in the same amount of time.
+HELPEOF
+}

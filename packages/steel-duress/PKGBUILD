@@ -1,0 +1,68 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+#
+# ============================================================================
+# THIS PACKAGE IS INSTALLED ON EVERY SteelOS MACHINE. IT IS NOT OPTIONAL.
+# ============================================================================
+#
+# CLAUDE.md gotcha 21: universal shipping is a hard requirement, not a
+# preference. If steel-duress were a package a user chose to install, its
+# presence on disk would BE the evidence. Finding it must prove only that the
+# machine runs SteelOS.
+#
+# steel-base depends on it for that reason, and nothing here is conditional on
+# whether duress is configured.
+
+pkgname=steel-duress
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS duress credentials and decoy provisioning (shipped on every install, configured or not)"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('bash' 'cryptsetup' 'mkinitcpio')
+optdepends=(
+  'tpm2-tools: TPM-sealed decoy key for unattended aging sessions'
+  'steel-backup: a wiping duress action requires a verified off-device backup'
+  'steel-check: audits that no plaintext location reveals configuration'
+)
+source=(
+  'src/steel-duress'
+  'src/steel-decoy'
+  'src/initcpio-hook'
+  'src/initcpio-install'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+install=steel-duress.install
+
+package() {
+  install -Dm755 "$srcdir/steel-duress" "$pkgdir/usr/bin/steel-duress"
+  install -Dm755 "$srcdir/steel-decoy" "$pkgdir/usr/bin/steel-decoy"
+
+  # The hook goes into EVERY initramfs. Not conditional on configuration: an
+  # initramfs whose size or contents differed between a configured and an
+  # unconfigured machine would be the tell.
+  install -Dm755 "$srcdir/initcpio-hook" "$pkgdir/usr/lib/initcpio/hooks/steel-duress"
+  install -Dm644 "$srcdir/initcpio-install" "$pkgdir/usr/lib/initcpio/install/steel-duress"
+
+  # The maintenance boot path marker. It exists on every install and does real
+  # work on machines with no decoy — staging updates, running backups, scrubbing
+  # filesystem state — so that its presence proves nothing about how this
+  # machine is configured.
+  install -dm755 "$pkgdir/usr/lib/steelos"
+  install -Dm755 /dev/stdin "$pkgdir/usr/lib/steelos/maintenance-boot" <<'MAINT'
+#!/usr/bin/env bash
+# The maintenance boot path.
+#
+# Present on EVERY SteelOS install. On machines with no decoy it does genuinely
+# useful work, which is what makes its presence unremarkable — an entry that
+# only existed on decoy machines would be exactly the evidence the deniability
+# design cannot afford.
+set -euo pipefail
+/usr/bin/steelctl update --dry-run || true
+/usr/bin/steel-backup run || true
+btrfs scrub start -B /var || true
+[ -x /usr/lib/steelos/decoy-session ] && /usr/lib/steelos/decoy-session || true
+systemctl poweroff
+MAINT
+}

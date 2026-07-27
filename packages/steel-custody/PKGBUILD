@@ -1,0 +1,19 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-custody
+pkgver=0.1.0
+pkgrel=1
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+pkgdesc="Split-key custody for SteelOS: Shamir 2-of-3 across a hardware token, a delayed release service, and a second party"
+depends=('bash' 'cryptsetup' 'systemd')
+optdepends=(
+  'libfido2: FIDO2 token support, the default for share A'
+  'opensc: PIV/PKCS#11 smartcard support'
+)
+source=('src/steel-custody')
+sha256sums=('SKIP')
+
+package() {
+  install -Dm755 "$srcdir/steel-custody" "$pkgdir/usr/bin/steel-custody"
+}

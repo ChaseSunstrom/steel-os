@@ -1,0 +1,11 @@
+[Unit]
+Description=Restore a sample and compare hashes
+ConditionUser=!root
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steel-backup verify
+Nice=19
+IOSchedulingClass=idle
+PrivateTmp=yes
+NoNewPrivileges=yes

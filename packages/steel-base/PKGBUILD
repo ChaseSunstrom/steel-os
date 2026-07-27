@@ -27,6 +27,13 @@ depends=(
   'steel-network'
   'steel-sandbox'
   'steel-apparmor'
+  'steel-identity'
+  'steel-backup'
+  # NOT optional, and not a preference. CLAUDE.md gotcha 21: if steel-duress
+  # were installed only by people who wanted duress features, its presence on
+  # disk would BE the evidence. It ships on every machine, configured or not,
+  # so that finding it proves only that the machine runs SteelOS.
+  'steel-duress'
 )
 
 # Not dependencies, because each takes something away as well as adding
@@ -34,6 +41,10 @@ depends=(
 # a meta-package.
 optdepends=(
   'steel-desktop: Plasma privacy defaults, removable-media mount policy'
+  'steel-boot: A/B slot management and boot counting (image deployments)'
+  'steel-config: steelctl, the manifest engine (image deployments)'
+  'steel-custody: split-key custody, for the travelling-researcher case'
+  'steel-vault: deniable document volume, against a repeat-imaging adversary'
   'usbguard: USB device authorisation, required by the strict preset'
   'linux-hardened: the kernel this baseline is tuned for'
   'flatpak: the primary path for installing GUI applications'

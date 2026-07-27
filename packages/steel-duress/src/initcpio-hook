@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+#
+# steel-duress initramfs hook.
+#
+# ============================================================================
+# THIS FILE SHIPS ON EVERY SteelOS INSTALL, CONFIGURED OR NOT.
+# ============================================================================
+#
+# CLAUDE.md gotcha 21: universal shipping is a hard requirement, not a
+# preference. If this hook were installed only on machines with duress
+# configured, its presence on disk would BE the evidence. Finding it must prove
+# only that the machine runs SteelOS.
+#
+# Therefore, and this constrains every line below:
+#
+#   * No configuration file outside the encrypted volume.
+#   * No systemd unit, no journal entry, no log line that differs between a
+#     configured and an unconfigured machine.
+#   * Identical timing on every path — real, decoy-maintenance, decoy-duress,
+#     and wrong. An examiner with a stopwatch must learn nothing.
+#   * No early return. Even with nothing configured, this does the same work
+#     and takes the same time.
+#
+# The credential store lives INSIDE the encrypted volume for the real
+# passphrase, and in the fixed-size custody region for anything the initramfs
+# needs before decryption. Both exist on every machine; on most they are random
+# fill.
+
+run_hook() {
+    # Constant-time comparison. A byte-by-byte comparison that returns early on
+    # the first mismatch leaks the length of the matching prefix through timing,
+    # which over a few hundred attempts recovers the credential.
+    #
+    # We compare salted hashes, never the credentials themselves.
+    steel_constant_time_equal() {
+        local a=$1 b=$2
+        local result=0 i
+        # Length difference must not short-circuit either.
+        [ ${#a} -eq ${#b} ] || result=1
+        local n=${#a}
+        [ ${#b} -lt "$n" ] && n=${#b}
+        for (( i = 0; i < n; i++ )); do
+            [ "${a:i:1}" = "${b:i:1}" ] || result=1
+        done
+        return $result
+    }
+
+    # Deriving the comparison hash. Argon2 would be better; the initramfs has
+    # no argon2 binary, and adding one changes the initramfs size on every
+    # machine, which is itself observable. sha256 over a per-machine salt from
+    # the custody region is the compromise, and the salt makes a precomputed
+    # table useless.
+    steel_hash_credential() {
+        local credential=$1 salt=$2
+        printf '%s%s' "$salt" "$credential" | sha256sum | cut -d' ' -f1
+    }
+
+    # The custody region: 4 MiB at a fixed offset, present on EVERY install.
+    # On a machine with nothing configured it is random data, and every read
+    # below still happens — the work is identical, so the timing is identical.
+    STEEL_CUSTODY_DEV=/dev/disk/by-partlabel/steelos-custody
+
+    steel_read_custody() {
+        local offset=$1 length=$2
+        dd if="$STEEL_CUSTODY_DEV" bs=1 skip="$offset" count="$length" \
+           status=none 2>/dev/null | od -An -tx1 | tr -d ' \n'
+    }
+
+    # Layout of the custody region. Fixed offsets so the read pattern is
+    # identical regardless of what is stored.
+    #   0..32     salt
+    #   32..64    duress credential hash      (random fill when unconfigured)
+    #   64..96    decoy-maintenance hash      (random fill when unconfigured)
+    #   96..128   decoy-duress hash           (random fill when unconfigured)
+    #   128..160  action code                 (random fill when unconfigured)
+    STEEL_SALT=$(steel_read_custody 0 32)
+    STEEL_DURESS_HASH=$(steel_read_custody 32 32)
+    STEEL_DECOY_MAINT_HASH=$(steel_read_custody 64 32)
+    STEEL_DECOY_DURESS_HASH=$(steel_read_custody 96 32)
+    STEEL_ACTION=$(steel_read_custody 128 32)
+
+    # On an unconfigured machine these are random bytes, so no credential a
+    # human could type will ever match them. That is the intended behaviour:
+    # the code runs, the comparisons happen, nothing matches, and the normal
+    # unlock proceeds. Identical work, identical time, no branch taken that an
+    # unconfigured machine does not also take.
+
+    steel_check_credential() {
+        local entered=$1
+        local hash
+        hash=$(steel_hash_credential "$entered" "$STEEL_SALT")
+
+        # ALL comparisons run, always. Returning as soon as one matches would
+        # make a matching duress credential measurably faster than a wrong
+        # password, which is the one thing this must never be.
+        local matched_duress=1 matched_decoy_maint=1 matched_decoy_duress=1
+        steel_constant_time_equal "$hash" "$STEEL_DURESS_HASH" && matched_duress=0
+        steel_constant_time_equal "$hash" "$STEEL_DECOY_MAINT_HASH" && matched_decoy_maint=0
+        steel_constant_time_equal "$hash" "$STEEL_DECOY_DURESS_HASH" && matched_decoy_duress=0
+
+        if [ $matched_duress -eq 0 ]; then
+            steel_perform_action "$STEEL_ACTION"
+        elif [ $matched_decoy_duress -eq 0 ]; then
+            # Unlock the decoy AND destroy the real volume's key material,
+            # silently, before any UI appears. This is the credential disclosed
+            # under coercion.
+            steel_destroy_real_keys
+            steel_unlock_decoy
+        elif [ $matched_decoy_maint -eq 0 ]; then
+            # Unlock the decoy with no side effects. This is the owner's
+            # routine credential, used to age the decoy credibly, and it is
+            # never disclosed.
+            #
+            # Two decoy credentials or none: a decoy that always wipes cannot be
+            # used routinely, and a decoy that is never used does not age
+            # credibly. Both paths must be indistinguishable to an examiner.
+            steel_unlock_decoy
+        fi
+        # No else. A non-matching credential falls through to the normal LUKS
+        # unlock, which is also what happens on every unconfigured machine.
+    }
+
+    steel_destroy_real_keys() {
+        # Key destruction, not data destruction. Overwriting a modern SSD takes
+        # far too long and wear levelling means you cannot reliably overwrite
+        # anything; destroying key material makes the ciphertext permanently
+        # unreadable in milliseconds.
+        #
+        # Everything here must complete before any UI appears, and must produce
+        # no output, no log entry, and no observable difference in what happens
+        # next.
+        {
+            cryptsetup luksErase --batch-mode /dev/disk/by-partlabel/steelos-var
+            # The header area too: luksErase clears keyslots, and a header
+            # backup elsewhere could otherwise restore them.
+            dd if=/dev/urandom of=/dev/disk/by-partlabel/steelos-var \
+               bs=1M count=16 conv=fsync
+            # TPM-sealed objects.
+            tpm2_nvundefine 0x1500001
+            # Per-user homed headers.
+            for home in /var/lib/systemd/home/*.home; do
+                cryptsetup luksErase --batch-mode "$home"
+            done
+        } >/dev/null 2>&1 || true
+        # Best-effort TRIM of the header region as a secondary step.
+        blkdiscard -o 0 -l 16777216 /dev/disk/by-partlabel/steelos-var >/dev/null 2>&1 || true
+    }
+
+    steel_unlock_decoy() {
+        # The decoy has its own header, its own homed user, its own /var. Not a
+        # hidden volume in the VeraCrypt sense — /usr is byte-identical across
+        # all installs, so the decoy's system reveals nothing because it IS the
+        # same system.
+        export STEEL_TARGET_VOLUME=/dev/disk/by-partlabel/steelos-decoy
+    }
+
+    steel_perform_action() {
+        case $1 in
+            *77697065*)  # "wipe" in hex
+                steel_destroy_real_keys
+                # A plausible failure, never "wipe complete". The screen must
+                # look like a wrong passphrase or a boot failure.
+                poweroff -f
+                ;;
+            *616c6572*)  # "aler" in hex — alert-only
+                # Unlock normally, but mark a canary. Destruction is not
+                # universally the safe response: wiping in front of someone who
+                # was going to let you go escalates a search into an arrest.
+                : > /run/steelos/duress-canary 2>/dev/null || true
+                ;;
+        esac
+    }
+
+    # Hook into the passphrase prompt. Every entered credential goes through
+    # steel_check_credential before any keyslot is tried — a duress credential
+    # must never be a LUKS keyslot, or luksDump reveals the extra slot and
+    # destroys the entire point (gotcha 14).
+    export -f steel_check_credential 2>/dev/null || true
+}
+
+# No run_latehook, no run_cleanuphook. Anything that ran later would have to be
+# conditional on configuration, and a conditional code path is exactly what the
+# universal-shipping rule forbids.

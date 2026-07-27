@@ -1,0 +1,54 @@
+post_install() {
+  # The initramfs must be rebuilt so the hook is present. On EVERY machine —
+  # a machine whose initramfs lacked it would be distinguishable from every
+  # other SteelOS machine, which is a finding even for a user who will never
+  # configure duress.
+  if command -v mkinitcpio >/dev/null; then
+    grep -q 'steel-duress' /etc/mkinitcpio.conf 2>/dev/null || \
+      sed -i 's/^HOOKS=(\(.*\)encrypt/HOOKS=(\1steel-duress encrypt/' /etc/mkinitcpio.conf 2>/dev/null || true
+    mkinitcpio -P >/dev/null 2>&1 || true
+  fi
+
+  cat <<'MSG'
+
+steel-duress: installed. Nothing is configured, and that is the normal state.
+
+  This package is on EVERY SteelOS machine whether or not anyone uses it.
+  That is deliberate: a duress package installed only by people who need
+  duress would make its own presence the evidence. Finding it here proves
+  only that this machine runs SteelOS.
+
+  BEFORE configuring anything, read:
+
+      docs/duress-and-deniability.md
+
+  Specifically, that these measures hide WHETHER you used a decoy and not
+  THAT the capability exists; that an adversary who images your disk twice
+  defeats a decoy outright; and that destroying data during an investigation
+  is itself an offence in some places.
+
+  For most people at risk, not carrying the data at all beats every trick in
+  that document.
+
+MSG
+}
+
+post_upgrade() {
+  command -v mkinitcpio >/dev/null && mkinitcpio -P >/dev/null 2>&1 || true
+}
+
+pre_remove() {
+  cat <<'MSG'
+
+steel-duress: REMOVING THIS PACKAGE IS A DENIABILITY PROBLEM.
+
+  Every other SteelOS machine has it. A machine without it is distinguishable
+  from a stock install to anyone who looks, and "why did you remove the duress
+  package" is a worse conversation than "every install has one".
+
+  If you do not want duress features, simply do not configure them. That is
+  the intended state and it is indistinguishable from this package being
+  present and unused — which is the entire point.
+
+MSG
+}

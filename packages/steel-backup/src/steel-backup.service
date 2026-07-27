@@ -1,0 +1,31 @@
+[Unit]
+Description=Back up this user's home
+Documentation=https://github.com/ChaseSunstrom/steel-os
+# Only when the home is unlocked, which for a systemd-homed user means only
+# inside a session. A backup attempted against a locked home reads an opaque
+# encrypted image and produces a blob nobody can restore selectively.
+ConditionUser=!root
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steel-backup run
+
+# Backups run at low priority: a backup that makes the machine feel slow gets
+# disabled, and a disabled backup protects nothing.
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+
+# The service reads the whole home, so it is a high-value target for anything
+# that can influence it. Confine what it can reach.
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=%h

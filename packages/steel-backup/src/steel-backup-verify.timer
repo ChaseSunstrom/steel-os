@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify a restore actually works
+Documentation=https://github.com/ChaseSunstrom/steel-os
+
+[Timer]
+# Monthly. A backup system that has never restored is not a backup system, and
+# the only way to know it restores is to restore.
+OnCalendar=monthly
+RandomizedDelaySec=48h
+Persistent=yes
+
+[Install]
+WantedBy=timers.target

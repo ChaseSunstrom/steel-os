@@ -1,0 +1,33 @@
+post_install() {
+  cat <<'MSG'
+
+steel-backup: not yet configured, and deliberately not started.
+
+  Set it up as each user, not as root — a locked home is an opaque
+  encrypted image, so backups run from inside the session:
+
+      steel-backup setup
+      steel-backup probe      # proves the credential cannot delete history
+      steel-backup run
+      steel-backup verify     # restores a sample and compares hashes
+      systemctl --user enable --now steel-backup.timer steel-backup-verify.timer
+
+  Three things this refuses to do, and why:
+
+    * A target on this disk. A backup destroyed by the same wipe that
+      destroys the volume is not a backup.
+
+    * A remote target whose credential can delete. Without append-only, an
+      adversary with the unlocked machine deletes the backups first and then
+      the local wipe is total.
+
+    * Keeping the outer PRIVATE key here. The outer layer exists so a seized
+      machine cannot decrypt its own history; the private half belongs on a
+      token, on paper, or with someone you trust.
+
+  If you have decided not to back up, record it — `steel-backup disable` —
+  so that steel-check reports a decision rather than a broken measure. Note
+  that with no off-device backup, duress key destruction is permanent.
+
+MSG
+}

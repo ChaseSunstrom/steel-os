@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the per-user backup on idle
+Documentation=https://github.com/ChaseSunstrom/steel-os
+
+[Timer]
+# Daily, with a wide random delay. Not "every day at 03:00": a machine that
+# backs up at a predictable time tells an observer of the network exactly when
+# it is unattended, and for a decoy profile a perfectly regular schedule is
+# itself a signature.
+OnCalendar=daily
+RandomizedDelaySec=4h
+Persistent=yes
+
+[Install]
+WantedBy=timers.target

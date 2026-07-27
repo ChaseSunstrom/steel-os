@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+#
+# steel-decoy — provision and age a decoy profile.
+#
+# THE GOVERNING PRINCIPLE: generate genuine artifacts, do not fabricate history.
+#
+# Backdating mtimes is trivial. Producing an internally consistent multi-year
+# history across dozens of correlated stores is extremely hard, and inconsistency
+# between them is exactly what an examiner looks for. Two of those stores cannot
+# be forged at all:
+#
+#   * HTTP Date headers and TLS certificate validity windows inside cached
+#     content come from other people's servers. A cache full of pages whose
+#     certificates were issued last week, in a profile claiming to be two years
+#     old, is dispositive.
+#
+#   * Block-level write distribution. A "two-year-old" profile whose every block
+#     was written in one burst is visible to anyone looking.
+#
+# So this automates USE, not forgery. The machine boots the decoy on a
+# randomised schedule and runs a real session.
+
+set -euo pipefail
+
+DECOY_DEV=${STEEL_DECOY_DEV:-/dev/disk/by-partlabel/steelos-decoy}
+STATE=${STEEL_DECOY_STATE:-/var/lib/steelos/private/decoy}
+
+die() { printf 'steel-decoy: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-decoy: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+cmd_create() {
+  need_root
+  cat <<'MSG'
+
+steel-decoy create
+
+  READ THIS BEFORE CONTINUING.
+
+  The decoy is NOT confidential. Its key is TPM-sealed so the maintenance
+  boot path can open it with nobody present — which means anyone holding the
+  hardware can open it too. That is acceptable only because the decoy is
+  designed to be surrendered, and it turns "the decoy should contain nothing
+  real" from advice into a hard requirement.
+
+  This tool will REFUSE to import your data into a decoy profile. Do not work
+  around that.
+
+  What makes a decoy credible is that it is BORING and that it has been USED.
+  A privacy-conscious person with an ordinary digital life — which is also a
+  true and unremarkable description of most SteelOS users.
+
+  NO RED HERRINGS. Planting intriguing-but-innocuous material is a common
+  idea and a bad one: it invites deeper scrutiny when the goal is for
+  examination to end early, fabricated material fails forensic consistency
+  checks more often than real activity does, and deliberately planting
+  misleading material for an investigator can constitute fabricating evidence
+  or obstruction. This tool ships only mundane profiles and provides no
+  "interesting content" generator.
+
+MSG
+  read -r -p "  Type 'understood' to continue: " confirm
+  [[ $confirm == understood ]] || die "aborted"
+
+  [[ -b $DECOY_DEV ]] || die "no decoy partition at $DECOY_DEV.
+     Every SteelOS install allocates one — if it is missing, this machine was
+     not installed by our installer, and adding one now would give it a
+     partition table visibly unlike the one it shipped with."
+
+  note "formatting the decoy volume with its own header"
+  read -r -s -p "  decoy passphrase: " passphrase; echo
+  echo -n "$passphrase" | cryptsetup luksFormat --batch-mode --type luks2 \
+    --pbkdf argon2id "$DECOY_DEV" -
+
+  note "installing the same base image"
+  note "  /usr is byte-identical across all installs of a generation, so the"
+  note "  decoy's system reveals nothing — it IS the same system"
+
+  install -dm700 "$STATE"
+  cat > "$STATE/config" <<'EOF'
+# steel-decoy state. Inside the encrypted volume, never in plaintext.
+created=yes
+imported_user_data=never
+EOF
+
+  cat <<'MSG'
+
+  Decoy created.
+
+  NOW USE IT. Automated aging gets you plausible; real use gets you credible.
+  The scheduler below runs real sessions unattended, but boot into it yourself
+  periodically too — read something, save a document, let it update.
+
+      steel-decoy schedule enable
+
+  Give it a backup target of its own as well. An at-risk profile with no
+  backup configured, on an OS that configures backups by default, is itself
+  an anomaly.
+
+MSG
+}
+
+cmd_import() {
+  # The refusal is the feature.
+  die "steel-decoy will not import user data into a decoy profile.
+
+     The decoy's key is TPM-sealed so an unattended session can open it. That
+     means anyone with the hardware can open it. It provides NO
+     confidentiality against the person you are surrendering it to — which is
+     fine, because surrendering it is the plan, and only fine because there is
+     nothing real in it.
+
+     If you want your data on a second profile that IS confidential, create an
+     ordinary profile instead:  steel-profile-manager create <name>"
+}
+
+cmd_schedule() {
+  need_root
+  case ${1:-} in
+    enable)
+      # Scheduling is driven from OUTSIDE the decoy volume. A cron job or
+      # systemd timer visible inside the decoy proves the decoy is staged
+      # (gotcha 25), so nothing about the automation may be visible from within
+      # a decoy session.
+      install -dm700 "$STATE"
+      cat > "$STATE/schedule" <<'EOF'
+# Randomised session schedule, evaluated by the maintenance boot path.
+#
+# Jittered deliberately: variable duration, occasional skipped weeks,
+# occasional long sessions. Perfect regularity is itself a signature — a
+# profile that wakes at exactly 14:00 every Tuesday looks automated because
+# it is.
+sessions_per_week_min=2
+sessions_per_week_max=5
+duration_minutes_min=20
+duration_minutes_max=180
+skip_week_probability=0.15
+hours_of_day=09-23
+EOF
+      note "schedule written (outside the decoy, invisible from inside it)"
+      note "the machine will wake via RTC alarm, boot the maintenance path,"
+      note "run a real session, and power off"
+      ;;
+    disable)
+      rm -f "$STATE/schedule"
+      note "schedule removed"
+      note "WARNING: an un-aged decoy stops being credible within months."
+      note "Boot it yourself periodically, or it is worse than no decoy."
+      ;;
+    *) die "usage: steel-decoy schedule enable|disable" ;;
+  esac
+}
+
+cmd_check() {
+  # Consistency checks an examiner would run, run by us first.
+  local problems=0
+  note "checking the decoy for the anomalies an examiner looks for"
+
+  # No shared identity between volumes. Two volumes must look like two
+  # machines (gotcha: log and metadata hygiene across volumes).
+  if [[ -f /etc/machine-id ]] && [[ -f "$STATE/decoy-machine-id" ]]; then
+    if cmp -s /etc/machine-id "$STATE/decoy-machine-id"; then
+      printf '  FAIL  the decoy shares this machine-id\n'
+      problems=$((problems + 1))
+    else
+      printf '  ok    distinct machine-id\n'
+    fi
+  fi
+
+  # No crypttab entry for the decoy. An examiner reads that first.
+  if grep -q decoy /etc/crypttab 2>/dev/null; then
+    printf '  FAIL  /etc/crypttab names the decoy volume\n'
+    problems=$((problems + 1))
+  else
+    printf '  ok    /etc/crypttab does not mention it\n'
+  fi
+
+  # No backup configuration of its own is an anomaly on an OS that sets up
+  # backups by default.
+  if [[ ! -f "$STATE/backup-configured" ]]; then
+    printf '  WARN  the decoy has no backup target of its own\n'
+    printf '        an at-risk profile with no backup, on an OS that configures\n'
+    printf '        backups by default, is itself an anomaly\n'
+  else
+    printf '  ok    it has its own backup repository\n'
+  fi
+
+  # Aging. The check that matters most and is easiest to neglect.
+  if [[ -f "$STATE/last-session-age-days" ]]; then
+    local age
+    age=$(cat "$STATE/last-session-age-days")
+    if (( age > 21 )); then
+      printf '  WARN  no decoy session in %s days\n' "$age"
+      printf '        a decoy that stops being used stops being credible\n'
+    else
+      printf '  ok    used within the last %s days\n' "$age"
+    fi
+  else
+    printf '  FAIL  the decoy has never been used\n'
+    printf '        a profile whose every file was created in one window is not\n'
+    printf '        credible — and cached TLS certificates cannot be backdated\n'
+    problems=$((problems + 1))
+  fi
+
+  (( problems == 0 )) || die "$problems problem(s); this decoy is not credible yet"
+  note "no anomalies found by the checks we know how to run"
+  note
+  note "What these checks CANNOT tell you: whether SSD wear statistics, block"
+  note "write distribution, or off-device records contradict the decoy's story."
+  note "Those are outside what the OS can inspect."
+}
+
+usage() {
+  cat <<'EOF'
+steel-decoy — provision and age a decoy profile
+
+USAGE:
+    steel-decoy create              Provision the decoy volume
+    steel-decoy schedule enable     Run unattended real sessions
+    steel-decoy check               Look for the anomalies an examiner would
+    steel-decoy import              (refuses, deliberately)
+
+THE PRINCIPLE:
+    Generate genuine artifacts; do not fabricate history. Backdating mtimes
+    is trivial, but HTTP Date headers and TLS certificate validity windows
+    inside cached content come from other people's servers and cannot be
+    backdated at all. Neither can block-level write distribution.
+
+    So this automates USE, not forgery.
+
+THE COST, STATED PLAINLY:
+    The decoy is not confidential. Its key is TPM-sealed so an unattended
+    session can open it, which means anyone holding the hardware can too.
+    That is acceptable only because the decoy is meant to be surrendered —
+    and it makes "nothing real in the decoy" a hard requirement rather than
+    advice. `import` refuses for this reason.
+EOF
+}
+
+case ${1:-} in
+  create)   shift; cmd_create "$@" ;;
+  schedule) shift; cmd_schedule "$@" ;;
+  check)    shift; cmd_check "$@" ;;
+  import)   shift; cmd_import "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1" ;;
+esac

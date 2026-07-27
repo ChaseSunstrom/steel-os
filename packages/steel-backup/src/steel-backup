@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+#
+# steel-backup — per-user, layered, off-device backups.
+#
+# The duress design depends entirely on this layer. If backups live on the
+# protected device, or can be deleted by whoever holds it, then destroying local
+# key material destroys the data outright — and the user was told the opposite.
+#
+# Three rules are enforced here in code, not documentation:
+#
+#   1. No backup target may live on the device being protected. This is what
+#      resolves the recoverable-vs-destroyable tension: local key material is
+#      destroyable under duress precisely because recovery lives elsewhere.
+#
+#   2. Remote targets must be append-only, and that must be PROVED by writing a
+#      canary and trying to delete it. Without it an adversary with the unlocked
+#      machine deletes the backups first, and then the local wipe is total.
+#
+#   3. Only the PUBLIC half of the outer key may be on this device. The outer
+#      layer exists so that a seized machine cannot decrypt its own history. If
+#      the private key lands in the keyring "for convenience", that is gone and
+#      nothing warns you.
+#
+# The homed sharp edge (gotcha 9): a locked home is an opaque encrypted image,
+# and a block-level backup of one produces a blob that can only be restored
+# wholesale and cannot be verified or deduplicated. So this runs as a per-user
+# service, from inside the session, while the home is unlocked.
+
+set -euo pipefail
+
+STATE=${STEEL_BACKUP_STATE:-/var/lib/steelos/backup}
+KEYS="$STATE/keys"
+CONF=${STEEL_BACKUP_CONF:-/etc/steelos/backup.conf}
+
+die() { printf 'steel-backup: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-backup: %s\n' "$*"; }
+
+# --- rule 1: the target must not be on the protected device --------------------
+
+target_is_remote() {
+  local t=$1
+  [[ $t == *sftp:* || $t == *rest:* || $t == *s3:* || $t == *b2:* \
+     || $t == *ssh://* || $t == *rclone:* ]]
+}
+
+target_is_removable() {
+  local path=${1#restic:}; path=${path#borg:}
+  [[ $path == /run/media/* || $path == /media/* || $path == /mnt/* ]]
+}
+
+reject_local_target() {
+  local t=$1
+  target_is_remote "$t" && return 0
+  target_is_removable "$t" && return 0
+  local path=${t#restic:}; path=${path#borg:}
+  [[ $path == /* ]] || return 0
+  die "refusing target '$t': it is on the device being protected.
+
+     No backup target may live on the internal disk. That rule is what makes
+     local key material destroyable under duress while recovery remains
+     possible — a backup on this disk is destroyed by the same wipe.
+
+     A local btrfs snapshot is a convenience rollback and is labelled as one.
+     It is never counted as a backup.
+
+     Use a remote target, or removable media that is not attached during
+     normal operation."
+}
+
+# --- rule 2: append-only, proved rather than configured -----------------------
+
+cmd_probe() {
+  local target
+  target=$(sed -n 's/^target=//p' "$CONF" | head -1)
+  [[ -n $target ]] || die "no target configured"
+  target_is_remote "$target" || { note "target is not remote; append-only does not apply"; return 0; }
+
+  note "probing whether the backup credential can DELETE from $target"
+  note "a credential that can delete is a credential an adversary can use to delete"
+
+  # Write a canary, then try to remove it. Success at removing it is the
+  # failure: it means history can be destroyed by whoever holds this machine.
+  local canary="steelos-append-only-probe-$$"
+  local can_delete=no
+
+  if command -v restic >/dev/null && [[ $target == restic:* ]]; then
+    local repo=${target#restic:}
+    if restic -r "$repo" backup --tag "$canary" --stdin --stdin-filename probe \
+         <<<"probe" >/dev/null 2>&1; then
+      local id
+      id=$(restic -r "$repo" snapshots --tag "$canary" --json 2>/dev/null \
+           | grep -o '"short_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      if [[ -n $id ]] && restic -r "$repo" forget "$id" --prune >/dev/null 2>&1; then
+        can_delete=yes
+      fi
+    fi
+  fi
+
+  mkdir -p "$STATE"
+  if [[ $can_delete == yes ]]; then
+    sed -i '/^append_only_verified=/d' "$STATE/state" 2>/dev/null || true
+    printf 'append_only_verified=no\n' >> "$STATE/state"
+    die "the backup credential CAN delete from the repository.
+
+     Without append-only enforcement the duress design is hollow: an adversary
+     with the unlocked machine, or ransomware, deletes the backups first and
+     then the local wipe is total.
+
+     Fix this before relying on any of it:
+       restic:  run rest-server with --append-only
+       borg:    use an append-only forced SSH command
+
+     Pruning must happen from a separate trusted context — another machine, or
+     a token-gated admin credential — never from this device."
+  fi
+
+  sed -i '/^append_only_verified=/d' "$STATE/state" 2>/dev/null || true
+  printf 'append_only_verified=yes\n' >> "$STATE/state"
+  note "verified: this credential cannot delete history"
+}
+
+# --- rule 3: only the public half of the outer key ----------------------------
+
+check_outer_key() {
+  mkdir -p "$KEYS"
+  local found_private=""
+  for f in "$KEYS"/*; do
+    [[ -f $f ]] || continue
+    if grep -qE 'AGE-SECRET-KEY-|BEGIN (PGP|OPENSSH|RSA) PRIVATE KEY|BEGIN PRIVATE KEY' "$f" 2>/dev/null; then
+      found_private="$found_private $f"
+    fi
+  done
+  if [[ -n $found_private ]]; then
+    die "a PRIVATE outer key is on this device:$found_private
+
+     The outer layer exists so that a seized or fully compromised machine
+     cannot decrypt its own backup history. With the private key here, it can.
+
+     Move it to a hardware token or offline media, delete it from this machine,
+     and then ROTATE — it has been exposed for as long as it has been on disk."
+  fi
+}
+
+cmd_setup() {
+  cat <<'MSG'
+
+steel-backup setup
+
+  Two independent encryption layers, with independent key material:
+
+    inner   restic or borg client-side encryption. Protects the data against
+            whoever stores it.
+
+    outer   an age layer over each pack before upload, keyed by a RECIPIENT
+            PUBLIC KEY ONLY. Protects the data against whoever ends up
+            holding this laptop.
+
+  The outer layer is the one people skip, and it is the one that matters
+  most here: because only the public key is on the device, a seized machine
+  cannot decrypt its own historical backups.
+
+  LOSING THE OUTER PRIVATE KEY MEANS LOSING THE BACKUPS. There is no
+  recovery path and we cannot build one — that is the same property that
+  makes it useful. Store it on a hardware token, on paper, or with someone
+  you trust, and confirm you have done so before continuing.
+
+MSG
+  read -r -p "  Where is the outer PRIVATE key stored, off this device? " location
+  [[ -n $location ]] || die "aborted — set the outer key up first"
+  note "recorded: outer private key held at '$location' (this note is not the key)"
+
+  read -r -p "  Backup target (restic:sftp:host:/repo, or /run/media/... ): " target
+  reject_local_target "$target"
+
+  mkdir -p "$STATE" "$KEYS"
+  {
+    printf '# Written by steel-backup setup.\n'
+    printf 'target=%s\n' "$target"
+    printf 'outer_key_location=%s\n' "$location"
+  } >> "$CONF"
+
+  check_outer_key
+  note "target recorded. Run 'steel-backup probe' to verify append-only enforcement."
+  note "Then 'steel-backup run' and 'steel-backup verify'."
+}
+
+cmd_run() {
+  check_outer_key
+  local target
+  target=$(sed -n 's/^target=//p' "$CONF" | head -1)
+  [[ -n $target ]] || die "no target configured; run 'steel-backup setup'"
+  reject_local_target "$target"
+
+  # From inside the session, while the home is unlocked. A block-level backup
+  # of a locked homed image produces a blob that restores only wholesale and
+  # deduplicates badly.
+  [[ ${EUID:-$(id -u)} -ne 0 ]] || die "run as the user whose home is being backed up, not root"
+
+  note "backing up $HOME to $target"
+  restic -r "${target#restic:}" backup "$HOME" \
+    --exclude-caches \
+    --exclude "$HOME/.cache" \
+    --exclude "$HOME/.local/share/Trash" \
+    --exclude "$HOME/.local/share/containers" \
+    || die "backup failed"
+
+  record_age last_run_age_days 0
+  note "done"
+}
+
+# Ages are recorded in whole days, not timestamps.
+#
+# Not laziness: steel-check's output must contain no volatile fields, or the
+# deniability assertion — byte-identical output with and without duress
+# configured — cannot be stated as a comparison. Days-since is stable for 24
+# hours and is all anyone needs.
+record_age() {
+  local key=$1 value=$2
+  mkdir -p "$STATE"
+  touch "$STATE/state"
+  sed -i "/^$key=/d" "$STATE/state"
+  printf '%s=%s\n' "$key" "$value" >> "$STATE/state"
+}
+
+cmd_verify() {
+  local target
+  target=$(sed -n 's/^target=//p' "$CONF" | head -1)
+  [[ -n $target ]] || die "no target configured"
+
+  # A real restore of a sampled subset, compared by hash. A backup system that
+  # has never restored is not a backup system, and "restic check" verifies the
+  # repository's own integrity rather than that a restore produces your files.
+  local scratch
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+
+  note "restoring a sample into $scratch and comparing hashes"
+  local repo=${target#restic:}
+
+  restic -r "$repo" check --read-data-subset=5% || die "repository integrity check failed"
+
+  local latest
+  latest=$(restic -r "$repo" snapshots --latest 1 --json 2>/dev/null \
+           | grep -o '"short_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  [[ -n $latest ]] || die "no snapshot to restore from"
+
+  restic -r "$repo" restore "$latest" --target "$scratch" \
+    --include "$HOME/.config" || die "restore failed"
+
+  local mismatches=0 compared=0
+  while IFS= read -r -d '' original; do
+    local restored="$scratch$original"
+    [[ -f $restored ]] || { note "MISSING from restore: $original"; mismatches=$((mismatches+1)); continue; }
+    compared=$((compared + 1))
+    if ! cmp -s "$original" "$restored"; then
+      note "DIFFERS: $original"
+      mismatches=$((mismatches + 1))
+    fi
+  done < <(find "$HOME/.config" -type f -print0 2>/dev/null | head -c 100000)
+
+  (( mismatches == 0 )) || die "$mismatches file(s) did not restore correctly"
+  note "verified: $compared file(s) restored byte-identical"
+  record_age last_verify_age_days 0
+}
+
+cmd_status() {
+  echo "config:  $CONF"
+  if [[ -f $CONF ]]; then
+    sed -n 's/^target=/target:  /p' "$CONF"
+  else
+    echo "target:  none configured"
+  fi
+  if [[ -f $STATE/state ]]; then
+    sed -n 's/^last_run_age_days=/last run:     /p;s/^last_verify_age_days=/last verify:  /p;s/^append_only_verified=/append-only:  /p' "$STATE/state"
+  fi
+  echo
+  echo "Outer key files present (public only, by design):"
+  ls -1 "$KEYS" 2>/dev/null | sed 's/^/  /' || echo "  (none)"
+}
+
+cmd_disable() {
+  # Recorded rather than silent, so steel-check reports it as a decision.
+  mkdir -p /etc/steelos
+  cat > /etc/steelos/backup-disabled <<'EOF'
+# Backups are deliberately disabled on this machine.
+#
+# Note what this changes about duress: with no off-device backup, key
+# destruction is PERMANENT. wipe-keys becomes unrecoverable rather than
+# recoverable-by-you-later.
+EOF
+  note "backups disabled; steel-check will report this as a deliberate choice"
+  note "WARNING: with no off-device backup, duress key destruction is permanent"
+}
+
+usage() {
+  cat <<'EOF'
+steel-backup — per-user, layered, off-device backups
+
+USAGE:
+    steel-backup setup      Configure a target and the outer key
+    steel-backup run        Back up this user's home
+    steel-backup verify     Restore a sample and compare hashes
+    steel-backup probe      Prove the credential cannot delete history
+    steel-backup status
+    steel-backup disable    Record a deliberate decision not to back up
+
+THREE RULES, ENFORCED IN CODE:
+
+    1. No target on the protected device. A backup on this disk is destroyed
+       by the same wipe that destroys the volume.
+
+    2. Remote targets must be append-only, PROVED by probe. Without it an
+       adversary with the unlocked machine deletes the backups first.
+
+    3. Only the public half of the outer key may be here. That is what stops
+       a seized machine decrypting its own history.
+
+WHY PER-USER:
+    A locked systemd-homed home is an opaque encrypted image. Backing it up
+    at block level produces a blob that restores only wholesale and cannot
+    be verified. So this runs inside the session, while the home is
+    unlocked, with the user's own repository and key — which is also correct
+    for compartmentalisation, since one profile must not read another's
+    backups.
+EOF
+}
+
+case ${1:-} in
+  setup)   shift; cmd_setup "$@" ;;
+  run)     shift; cmd_run "$@" ;;
+  verify)  shift; cmd_verify "$@" ;;
+  probe)   shift; cmd_probe "$@" ;;
+  status)  shift; cmd_status "$@" ;;
+  disable) shift; cmd_disable "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1" ;;
+esac

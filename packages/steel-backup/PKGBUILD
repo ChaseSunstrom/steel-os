@@ -1,0 +1,37 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-backup
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS backups: per-user, layered encryption, append-only off-device targets, verified restores"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('bash' 'systemd')
+optdepends=(
+  'restic: the default backup engine'
+  'borg: alternative backup engine'
+  'age: the outer encryption layer'
+  'steel-check: verify target separateness, append-only, and outer-key-is-public'
+)
+source=(
+  'src/steel-backup'
+  'src/steel-backup.service'
+  'src/steel-backup.timer'
+  'src/steel-backup-verify.service'
+  'src/steel-backup-verify.timer'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+install=steel-backup.install
+
+package() {
+  install -Dm755 "$srcdir/steel-backup" "$pkgdir/usr/bin/steel-backup"
+
+  # USER units, not system units. A locked systemd-homed home is an opaque
+  # encrypted image; backing one up at block level from a system service
+  # produces a blob that restores only wholesale and cannot be verified.
+  for unit in steel-backup.service steel-backup.timer \
+              steel-backup-verify.service steel-backup-verify.timer; do
+    install -Dm644 "$srcdir/$unit" "$pkgdir/usr/lib/systemd/user/$unit"
+  done
+}

@@ -1,0 +1,15 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+pkgname=steel-vault
+pkgver=0.1.0
+pkgrel=1
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+pkgdesc="Optional write-only-ORAM deniable volume for documents. Off by default; roughly 4x write amplification"
+depends=('bash' 'cryptsetup')
+source=('src/steel-vault')
+sha256sums=('SKIP')
+
+package() {
+  install -Dm755 "$srcdir/steel-vault" "$pkgdir/usr/bin/steel-vault"
+}
