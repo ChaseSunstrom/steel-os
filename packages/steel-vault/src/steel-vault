@@ -94,6 +94,26 @@ steel-vault create
 MSG
   measure_amplification "$size_gb"
 
+  cat <<'MSG'
+  ────────────────────────────────────────────────────────────────────────
+  NOT YET IMPLEMENTED: the write-only-ORAM block layer.
+
+  What works today: a small, fully-random-filled, separately-keyed encrypted
+  volume with the size discipline described above.
+
+  What does NOT work today: the oblivious write pattern. That is the part
+  that defeats an adversary who images your disk more than once, and it is
+  the reason this tool is named what it is.
+
+  Until it lands, steel-vault gives you a second encrypted volume and an
+  honest warning. It does NOT give you deniability against a repeat-imaging
+  adversary. Do not plan around a property that is not there.
+  ────────────────────────────────────────────────────────────────────────
+
+MSG
+  read -r -p "  Type 'no oram yet' to confirm you understand what is missing: " oram_ack
+  [[ $oram_ack == "no oram yet" ]] || die "aborted"
+
   read -r -p "  Type 'documents only' to confirm you understand the scope: " confirm
   [[ $confirm == "documents only" ]] || die "aborted"
 
@@ -154,12 +174,18 @@ USAGE:
     steel-vault open
     steel-vault close
 
-WHAT IT SOLVES:
+WHAT IT IS MEANT TO SOLVE:
     The multiple-snapshot adversary — the one hard limit of decoy systems
     that is actually technically solvable. If someone images your disk twice,
     blocks that changed while the decoy claims to have been idle are direct
     evidence of a hidden volume. Write-only ORAM makes the physical write
     pattern independent of what you wrote.
+
+WHAT IT ACTUALLY DOES TODAY:
+    Creates and manages a small, random-filled, separately-keyed encrypted
+    volume, and refuses to be large. The ORAM block layer is NOT implemented
+    yet. Until it is, this does not provide deniability against a
+    repeat-imaging adversary, and `create` says so before it does anything.
 
 WHAT IT COSTS:
     Roughly 4x write amplification. That is fine for documents and

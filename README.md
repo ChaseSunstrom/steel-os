@@ -5,9 +5,11 @@ filesystem, declarative package management, per-user encrypted homes, per-app
 sandboxing by default, and atomic updates with rollback — all of it the default
 state after a normal graphical install, not a weekend of manual work.
 
-**Status: Phase 0.** The hardening packages and the audit tool exist and work on
-plain Arch. The image build, installer, and everything that depends on them do
-not exist yet. See [Where this actually is](#where-this-actually-is).
+**Status: all seven phases implemented, nothing verified on hardware.** Every
+component described below exists and every automated gate passes. No physical
+machine has booted this, and the VM matrix has not been executed — it needs
+QEMU, OVMF and swtpm. See [Where this actually is](#where-this-actually-is)
+before relying on any of it.
 
 ## What it is, stated accurately
 
@@ -67,20 +69,30 @@ prevented); malware that only needs to survive until the next reboot.
 
 ## Where this actually is
 
-| Phase | What it delivers | Status |
+| Phase | What it delivers | State |
 |---|---|---|
-| 0 | Hardening packages + `steel-check` on plain Arch | **done** |
-| 1 | mkosi image build, verity, signed UKI | not started |
-| 2 | A/B slots, updates, boot counting, rollback | not started |
-| 3 | `manifest.toml`, `steelctl apply`/`diff` | not started |
-| 4 | homed provisioning, sandbox profiles, `steel-shell` | partial — `steel-shell` ships |
-| 5 | Backups and duress | audited, not implemented |
-| 6 | ISO and Calamares installer | not started |
-| 7 | Hardware matrix, release engineering | not started |
+| 0 | Hardening packages + `steel-check` on plain Arch | Implemented, **runs today** |
+| 1 | mkosi image build, verity, signed UKI | Implemented, never built |
+| 2 | A/B slots, updates, boot counting, rollback | Implemented, never booted |
+| 3 | `manifest.toml`, `steelctl apply`/`diff` | Implemented, unit-tested |
+| 4 | homed profiles, sandbox policy, AppArmor, Nix | Implemented, never run |
+| 5 | Backups, duress, decoy, custody, vault | Implemented; ORAM layer is a stub |
+| 6 | ISO and Calamares installer | Implemented, never installed |
+| 7 | VM matrix, timing harness, release pipeline | Implemented, matrix not executed |
 
-Phase 0's milestone: on a normal Arch VM, `pacman -S steel-base && steel-check`
-comes back green. That is useful on its own — the packages are config bundles
-that work on any Arch install — and it de-risks everything after it.
+**Phase 0 is the part you can use today.** The packages are config bundles that
+work on any Arch install: `pacman -S steel-base && steel-check` comes back
+green, and that is useful on its own.
+
+**Everything else is written and reviewed, not verified.** That distinction
+matters most in the boot chain, where a mistake means a machine that does not
+start. `docs/known-issues.md` is specific about which gotchas are addressed with
+an automated gate and which still need real hardware.
+
+One thing is deliberately less than its name suggests: `steel-vault` manages a
+small separately-keyed encrypted volume and enforces the size discipline, but
+the write-only-ORAM block layer — the part that defeats a repeat-imaging
+adversary — is **not implemented**. The tool says so before it creates anything.
 
 ## Try it now
 
@@ -167,14 +179,44 @@ data at all.
 ## Repository layout
 
 ```
-image/       mkosi build definitions                        (Phase 1)
-packages/    PKGBUILDs for the steel-* config bundles       (Phase 0)
-steelctl/    manifest engine, generations, update/rollback  (Phase 2-3)
-calamares/   installer modules                              (Phase 6)
+image/       mkosi build definitions, verity, UKI, device layout
+packages/    16 steel-* packages
+steelctl/    manifest engine, generations, update/rollback (lib + bin)
+calamares/   installer modules, including the comprehension check
+iso/         archiso profile for the live installer
 tools/       steel-check, steel-harden
-tests/       audit assertions (now), VM matrix (Phase 1+)
+tests/       audit assertions, VM matrix, timing harness
 docs/        threat model, rationale, escape hatches, known issues
 ```
+
+## What is checked automatically
+
+```
+cargo test --all                                    # 153 tests
+tests/audit/run.sh                                  # 11 suite-level assertions
+python3 calamares/modules/threatened/test_comprehension.py   # 13 tests
+tests/vm/timing-harness.sh                          # unlock-path timing
+```
+
+Three of those deserve naming, because they enforce properties that are easy to
+break silently:
+
+- **The consistency tests** compare the packaged sysctl, modprobe and cmdline
+  drop-ins against the tables `steel-check` audits against. Without them the
+  packages and the auditor drift apart, and the auditor becomes the thing that
+  is wrong.
+- **The deniability assertion** builds two sysroots differing only in duress
+  configuration and `cmp`s the output in every format.
+- **The timing harness** measures the four unlock paths pairwise rather than
+  inspecting the code. A comparison that returns early on the first differing
+  byte looks fine in review and leaks the matching prefix length over a few
+  hundred attempts.
+
+A CI job additionally audits the *source* for the universal-shipping rule: no
+conditional in the duress package, no early return in its initramfs hook, no
+plaintext configuration path. That catches the one class of change that quietly
+destroys the property — someone making an install conditional because it looked
+tidier.
 
 ## Contributing
 

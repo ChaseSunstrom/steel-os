@@ -53,8 +53,10 @@ then blocks that changed between images while the decoy claims to have been idle
 are direct evidence of a hidden volume.
 
 Defending against this requires ORAM-style oblivious write patterns at severe
-performance cost. `steel-vault` implements it for a small documents volume; the
-main volume does not have it and will not.
+performance cost. `steel-vault` is where that belongs, for a small documents
+volume — but **its ORAM block layer is not implemented yet**. Today `steel-vault`
+is a small separately-keyed encrypted volume with an honest warning, and it does
+not yet provide this property. The main volume does not have it and will not.
 
 **If your adversary has repeated physical access, assume decoys do not work for
 you.**

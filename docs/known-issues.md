@@ -3,7 +3,7 @@
 Kept current and honest. A stale or optimistic known-issues list is worse than
 none, because it teaches people not to read it.
 
-## Phase 0 (current)
+## Current
 
 ### The repository is not signed
 
@@ -50,51 +50,76 @@ implying it verified more than it did. Verify by hand with
 There is a `boot.repo-key-trusted` check described in the keyring README and not
 implemented, because there is nothing to check yet.
 
-## Expected to bite in later phases
+### Nothing has run on real hardware
 
-Recorded now because they are cheaper to design around than to discover.
+Every phase is implemented and every automated gate passes, but the VM matrix
+has not been executed and no physical machine has booted this. The matrix needs
+QEMU, OVMF, and swtpm; the hardware pass needs the five machine classes in
+`docs/hardware-matrix.md`.
 
-### A/B slots double root storage
+Treat everything below the Phase 0 packages as **written and reviewed, not
+verified**. That distinction matters most for the boot chain, where a mistake
+means a machine that does not start.
 
-Two full root images. Size the slots deliberately and document a minimum disk
-size before the installer ships, not after someone runs out of space mid-update.
+### The duress initramfs hook has not run in an initramfs
 
-### UKI size limits
+`packages/steel-duress/src/initcpio-hook` is written to the constraints —
+no early return, constant-time comparison, identical work on configured and
+unconfigured machines — and the timing harness measures a faithful
+reimplementation of its comparison path. It has not yet run inside a real
+initramfs against a real LUKS volume.
 
-Some firmware chokes on large PE binaries, and an initramfs with NVIDIA
-firmware, Plymouth, and broad hardware support gets big. This needs testing on
-real hardware, and probably firmware trimming to detected hardware.
+`steel-duress test` and `steel-duress drill` exist to establish that on a
+specific machine, and the docs say plainly that a wipe feature which has never
+been tested does not work.
 
-### TPM PCR bindings break on firmware updates
+## Addressed, but unverified on hardware
 
-A BIOS update invalidates PCR 7 and auto-unlock stops. This is not preventable;
-what matters is that the recovery key works, the error message says what
-happened, and `steel-boot reseal` exists. All three before TPM unlock ships.
+Each of these is implemented and has an automated gate. None has run on a
+physical machine, which is a different thing from being fixed.
 
-### Boot counting must be wired to a real health signal
+| Gotcha | How it is addressed | Still needs |
+|---|---|---|
+| A/B doubles root storage | 6 GiB slots, 64 GiB minimum enforced by the installer and reported by `steelos-check-hardware` | A real disk that is near the minimum |
+| UKI size limits | `build.sh` fails the build over 60 MiB | An NVIDIA machine, where the initrd is largest |
+| TPM PCRs break on firmware update | `steel-boot reseal`, and the enrollment prompt says so before you opt in | Actually updating a BIOS with TPM unlock enrolled |
+| Boot counting on a fake health signal | `boot-complete-health.sh` checks verity matches the UKI, `/var` mounted, a graphical session actually appeared, no critical `steel-check` failure | The demotion test in the VM matrix |
+| Duress credentials as LUKS keyslots | Separate salted hash in the custody region, never a keyslot | `luksDump` on a configured machine |
+| Timing distinguishability | Measured in CI, not inspected; fails above 5 ms | The real initramfs path, not a reimplementation |
+| Universal shipping | CI audits the source for conditionals, early returns, and plaintext config paths | — |
 
-If the counter is satisfied by "the kernel started", a system that boots to a
-black screen will never demote — which is precisely the failure that makes
-rollback necessary. `boot-complete.target` has to depend on something that means
-the desktop actually came up.
+## Still open
 
 ### systemd-homed sharp edges
 
-SSH login, sudo, PAM stacking, and suspend-lock behaviour all need explicit
-tests. Homed homes also do not shrink easily, so the size chosen at install
-matters more than users will expect.
+SSH login, sudo, PAM stacking, and suspend-lock behaviour need explicit tests.
+`identity.home-lock-on-suspend` checks the configuration, but the failure mode
+CLAUDE.md warns about is that it silently does not work — and only suspending a
+real laptop establishes that.
+
+Homed homes also do not shrink easily. The installer prompts with that caveat
+attached, which is the best we can do at the moment of the decision.
 
 ### Flatpak global overrides break app launching confusingly
 
 The top 30 desktop applications need testing after the defaults are applied. The
 symptoms — an empty file dialog, an app that cannot find its own data — do not
-point at the cause. `docs/escape-hatches.md` maps them, and that table needs to
-grow as real cases appear.
+point at the cause. `docs/escape-hatches.md` maps the ones we know about, and
+that table needs to grow as real cases appear.
 
 ### Read-only `/usr` breaks a long tail of software
 
 Anything expecting to drop files into `/usr/share` at runtime. The answer is
 containers or Flatpak, but the *error messages* users see will not say that.
+
+### `steel-vault`'s ORAM layer is a stub
+
+`steel-vault` creates and manages an encrypted volume, measures and reports
+write amplification, and refuses to be large. The write-only-ORAM block layer
+itself — the thing that actually defeats a repeat-imaging adversary — is not
+implemented. Until it is, `steel-vault` is a small encrypted volume with an
+honest warning attached, and it should not be relied on for the property it is
+named for.
 
 ## Reporting
 
