@@ -2,49 +2,97 @@
 #
 # steelos-install — launch the installer from the live session.
 #
-# A thin wrapper on purpose. It exists so there is exactly one entry point that
-# the desktop file, the autostart entry and the sudoers rule all name, rather
-# than three places that each invoke Calamares slightly differently and drift.
+# A thin wrapper, but not a trivial one. It exists so there is exactly one entry
+# point that the desktop file, the autostart entry and the sudoers rule all
+# name, and so that the installer's environment is set up in one place rather
+# than three that drift.
 #
-# It runs the hardware check first. Everything that check reports is a decision
-# the installer would otherwise make silently or discover too late: no TPM,
-# vendor-locked Secure Boot, a GPU newer than this channel's kernel. A user who
-# learns about it afterwards has already committed their disk.
+# It also exists so that a failure is visible. An installer launched from an
+# autostart entry has no terminal: if it exits, nothing appears, and the user is
+# left looking at an empty desktop with no way to find out why. Everything here
+# is logged to a file, and a failure puts a dialog on screen naming that file.
 
-set -euo pipefail
+set -uo pipefail
 
-log() { printf '\033[1msteelos-install:\033[0m %s\n' "$*"; }
+STATE=${STEELOS_LIVE_STATE:-/run/steelos}
+LOG="$STATE/install.log"
+
+install -dm755 "$STATE" 2>/dev/null || true
+
+log() { printf '[%s] steelos-install: %s\n' "$(date +%T)" "$*" | tee -a "$LOG" >&2; }
+
+# Put the message somewhere a user in a graphical session can actually see it.
+# Falls back through what the live medium has, and finally to the log alone.
+report_failure() {
+  local message="$1"
+  log "$message"
+  if command -v kdialog >/dev/null; then
+    kdialog --title "SteelOS installer" --error "$message"$'\n\n'"Log: $LOG" &
+  elif command -v xmessage >/dev/null; then
+    xmessage -center "$message
+
+Log: $LOG" &
+  fi
+}
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  exec sudo -n /usr/local/bin/steelos-install "$@"
+  log "re-running as root"
+  if ! sudo -n /usr/local/bin/steelos-install "$@"; then
+    report_failure "Could not start the installer as root."
+    exit 1
+  fi
+  exit 0
 fi
 
-report=$(mktemp -t steelos-hardware-XXXXXX.txt)
-if /usr/local/bin/steelos-check-hardware > "$report" 2>&1; then
-  log "hardware check passed; report at $report"
+# --- The installer's environment ---------------------------------------------
+#
+# Qt Quick renders with QPainter rather than through the GPU. The pages are
+# forms — there is nothing here that needs a GPU — and Qt's hardware paths are
+# the single most common way a Qt application comes up as a black window on a
+# virtual machine or an unfamiliar graphics stack. Mesa falling back to zink,
+# an incomplete GL implementation in a hypervisor, a driver that reports a
+# context and then cannot render to it: all of them end the same way, and none
+# of them can be diagnosed from inside a black rectangle.
+#
+# The live medium's job is to run on hardware nobody here has seen. Trading
+# unnecessary GPU acceleration for that is not a close call.
+export QT_QUICK_BACKEND=${QT_QUICK_BACKEND:-software}
+
+# The pages read the machine facts and the recovery key that steelos-live-probe
+# wrote to /run/steelos, and the threatened-user page reads the limits it renders
+# from the branding directory. QML refuses local file reads through
+# XMLHttpRequest unless this is set, and without it those pages come up empty
+# with only a warning in the log.
+export QML_XHR_ALLOW_FILE_READ=1
+
+log "session: ${XDG_SESSION_TYPE:-unknown}  platform: ${QT_QPA_PLATFORM:-default}  quick: $QT_QUICK_BACKEND"
+
+# --- Hardware check -----------------------------------------------------------
+#
+# Everything this reports is a decision the installer would otherwise make
+# silently or discover too late: no TPM, vendor-locked Secure Boot, a GPU newer
+# than this channel's kernel. A user who learns about it afterwards has already
+# committed their disk.
+
+if /usr/local/bin/steelos-check-hardware >>"$LOG" 2>&1; then
+  log "hardware check passed"
 else
-  # A failed check is informational, not fatal. Every machine it warns about is
-  # still installable — the point is that the user knows going in. Refusing to
-  # start would just teach people to bypass the wrapper.
-  log "hardware check reported problems; see $report"
+  # Informational, not fatal. Every machine it warns about is still installable;
+  # the point is that the warning is recorded. Refusing to start would only
+  # teach people to bypass this wrapper.
+  log "hardware check reported problems; see $LOG"
 fi
-cat "$report"
 
 if ! command -v calamares >/dev/null; then
-  log "calamares is not installed on this medium."
-  log "This ISO was built without the installer; use a release ISO to install."
+  report_failure "Calamares is not installed on this medium. Use a release ISO to install SteelOS."
   exit 1
 fi
 
-# The installer's pages read the machine facts and the recovery key that
-# steelos-live-probe wrote to /run/steelos, and the threatened-user page reads
-# the limits it renders from the branding directory. QML refuses local file
-# reads through XMLHttpRequest unless this is set, and without it those pages
-# come up empty with only a warning in the log.
-#
-# This is why the launcher exists as the single entry point rather than the
-# desktop file invoking calamares directly: there is exactly one place the
-# environment is set up, so there is no way to start the installer half-armed.
-export QML_XHR_ALLOW_FILE_READ=1
-
-exec calamares "$@"
+log "starting calamares"
+if ! calamares "$@" >>"$LOG" 2>&1; then
+  status=$?
+  # Cancelling is a normal way to leave the installer, not a failure worth a
+  # dialog. Calamares exits 0 on a clean quit, so anything else is real.
+  report_failure "The installer exited unexpectedly (status $status)."
+  exit "$status"
+fi

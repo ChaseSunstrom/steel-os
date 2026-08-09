@@ -41,6 +41,10 @@ ttf-dejavu
 # there is no longer a separate plasma-wayland-session package.
 plasma-desktop
 plasma-workspace
+# The X11 session is a separate package. The live medium autologins into it —
+# see etc/sddm.conf.d/10-steelos-live.conf for why the medium and the installed
+# system differ here.
+plasma-x11-session
 sddm
 konsole
 dolphin

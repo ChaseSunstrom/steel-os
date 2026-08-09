@@ -252,6 +252,70 @@ class TestLiveSession(unittest.TestCase):
         self.assertIn("User=live", body)
         self.assertIn("[Autologin]", body)
 
+    def test_the_display_server_and_the_session_agree(self):
+        # Setting DisplayServer=x11 while naming a Wayland session file (or the
+        # reverse) fails at login with nothing useful on screen. The two names
+        # are set in different sections of the same file and nothing else
+        # cross-checks them.
+        body = (AIROOTFS / "etc/sddm.conf.d/10-steelos-live.conf").read_text()
+        server = re.search(r"^DisplayServer=(\S+)", body, re.M).group(1)
+        session = re.search(r"^Session=(\S+)", body, re.M).group(1)
+        if server == "x11":
+            self.assertIn("x11", session,
+                          "an X11 display server needs an X11 session file")
+        else:
+            self.assertNotIn("x11", session,
+                             "a Wayland display server needs a Wayland session")
+
+    def test_the_session_package_is_installed(self):
+        # Plasma's X11 session lives in its own package; plasma-workspace alone
+        # provides only the Wayland one. Naming a session file whose package is
+        # absent gives SDDM nothing to start.
+        body = (AIROOTFS / "etc/sddm.conf.d/10-steelos-live.conf").read_text()
+        session = re.search(r"^Session=(\S+)", body, re.M).group(1)
+        packages = (ISO / "packages.x86_64").read_text().split()
+        if "x11" in session:
+            self.assertIn("plasma-x11-session", packages)
+        else:
+            self.assertIn("plasma-workspace", packages)
+
+    def test_the_launcher_does_not_depend_on_a_gpu(self):
+        # Qt's hardware paths are the most common way a Qt application comes up
+        # as a black window on a virtual machine or an unfamiliar graphics
+        # stack, and a black window cannot be diagnosed from the inside. The
+        # pages are forms; nothing here needs a GPU.
+        body = (AIROOTFS / "usr/local/bin/steelos-install").read_text()
+        self.assertIn("QT_QUICK_BACKEND", body)
+        self.assertIn("software", body)
+
+    def test_the_launcher_leaves_a_log(self):
+        # Launched from an autostart entry there is no terminal. Without a log,
+        # a failure is indistinguishable from the installer never having been
+        # asked to start.
+        body = (AIROOTFS / "usr/local/bin/steelos-install").read_text()
+        self.assertIn("install.log", body)
+        self.assertIn("report_failure", body,
+                      "a failure must reach the screen, not only the log")
+
+    def test_a_dialog_tool_is_available_for_failures(self):
+        # report_failure falls back to xmessage. plasma-workspace depends on
+        # xorg-xmessage, so it is present transitively — but if the desktop ever
+        # changes, the fallback silently stops working.
+        packages = (ISO / "packages.x86_64").read_text().split()
+        self.assertTrue(
+            "plasma-workspace" in packages or "xorg-xmessage" in packages,
+            "nothing on the medium can put an error on screen",
+        )
+
+    def test_the_installer_can_be_started_three_ways(self):
+        # Autostart, the application menu, and an icon on the desktop. An
+        # autostart entry that fails leaves no trace on screen, and "there is no
+        # way to start the installer" is the worst thing a live medium can be.
+        self.assertTrue((AIROOTFS / "etc/xdg/autostart/steelos-install.desktop").exists())
+        self.assertTrue((AIROOTFS / "usr/share/applications/steelos-install.desktop").exists())
+        tmpfiles = (AIROOTFS / "etc/tmpfiles.d/steelos-live.conf").read_text()
+        self.assertIn("/home/live/Desktop", tmpfiles)
+
     def test_the_display_manager_is_enabled(self):
         link = AIROOTFS / "etc/systemd/system/display-manager.service"
         self.assertTrue(link.is_symlink(),
