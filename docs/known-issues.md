@@ -13,6 +13,34 @@ available. See `packages/steel-keyring/README.md` for what has to exist first �
 committing a placeholder keypair would make `pacman` appear to verify signatures
 while verifying nothing, which is worse than the current honest gap.
 
+### The ISO builds, but the Calamares sequence is not yet complete
+
+`iso/build.sh` produces a bootable live medium with the desktop, the SteelOS
+tooling and `steel-installer` on it, and CI builds it on every push. What it does
+**not** yet have is everything `calamares/settings.conf` names: the `steelos`
+branding component, the `shellprocess.conf` the `steelos` instance refers to, and
+the `steelos_deploy` / `steelos_verify` exec modules. Calamares will refuse to
+start a sequence whose modules it cannot resolve, so the installer on the current
+ISO does not run end to end.
+
+The ISO is therefore useful today for the live environment and the recovery
+tools, and for testing that the medium boots on real hardware — which is exactly
+what the hardware matrix needs it for — but it is not yet an installer you can
+hand to someone. Those modules are the remaining Phase 6 work.
+
+### Calamares is built from the AUR
+
+Arch does not ship Calamares in `core` or `extra`, so `iso/build.sh` builds it
+from the AUR PKGBUILD during the ISO build. That means an upstream AUR change can
+break our ISO build, and it means the ISO's installer is built from a PKGBUILD we
+do not control.
+
+The alternative — pulling a binary from a third-party repository — is worse: this
+project's central claim is that you can verify what the system is made of, and an
+unaudited binary repo in the build pipeline would be the least defensible
+dependency in it. Building from source at least keeps the inputs inspectable.
+Pinning the AUR revision is the obvious next step and has not been done yet.
+
 ### `module.sig_enforce=1` and `lockdown=confidentiality` are not applied on plain Arch
 
 Both are in the audited baseline but deliberately left out of the shipped cmdline
@@ -27,7 +55,7 @@ failure on `image` ones.
 
 ### The captive portal helper is untested against real portals
 
-`packages/steel-network/src/captive-portal-helper` implements the intended
+`packages/steel-network/captive-portal-helper` implements the intended
 design — bounded plaintext window, disposable browser profile, unconditional
 restore — but it has not been run against actual hotel or airport portals. The
 polling loop's use of `nmcli` connectivity state in particular is likely to need
@@ -63,7 +91,7 @@ means a machine that does not start.
 
 ### The duress initramfs hook has not run in an initramfs
 
-`packages/steel-duress/src/initcpio-hook` is written to the constraints —
+`packages/steel-duress/initcpio-hook` is written to the constraints —
 no early return, constant-time comparison, identical work on configured and
 unconfigured machines — and the timing harness measures a faithful
 reimplementation of its comparison path. It has not yet run inside a real

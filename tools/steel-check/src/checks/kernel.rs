@@ -725,8 +725,7 @@ mod tests {
     /// steel-check reports on a baseline the system was never configured with.
     #[test]
     fn sysctl_dropin_matches_baseline() {
-        let path =
-            repo_root().join("packages/steel-kernel-hardening/src/sysctl/99-steel-hardening.conf");
+        let path = repo_root().join("packages/steel-kernel-hardening/99-steel-hardening.conf");
         let body = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
@@ -776,9 +775,8 @@ mod tests {
                 .collect()
         };
 
-        let base = read("packages/steel-kernel-hardening/src/modprobe/99-steel-blacklist.conf");
-        let strict =
-            read("packages/steel-kernel-hardening/src/modprobe/99-steel-blacklist-strict.conf");
+        let base = read("packages/steel-kernel-hardening/99-steel-blacklist.conf");
+        let strict = read("packages/steel-kernel-hardening/99-steel-blacklist-strict.conf");
 
         for (module, _) in BLACKLISTED_MODULES {
             let expected = if STRICT_ONLY_MODULES.contains(module) {
@@ -811,7 +809,7 @@ mod tests {
     /// The cmdline fragment shipped by the package must match what we audit.
     #[test]
     fn cmdline_fragment_matches_baseline() {
-        let path = repo_root().join("packages/steel-kernel-hardening/src/cmdline/hardening");
+        let path = repo_root().join("packages/steel-kernel-hardening/hardening");
         let body = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let fragment: Vec<&str> = body

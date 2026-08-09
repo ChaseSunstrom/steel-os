@@ -52,7 +52,7 @@ make_green_sysroot() {
   mkdir -p "$root"
 
   # --- kernel: effective sysctls, read from /proc/sys ---------------------
-  local conf="$REPO_ROOT/packages/steel-kernel-hardening/src/sysctl/99-steel-hardening.conf"
+  local conf="$REPO_ROOT/packages/steel-kernel-hardening/99-steel-hardening.conf"
   while IFS= read -r line; do
     [[ $line =~ ^[[:space:]]*# ]] && continue
     [[ -z ${line// } ]] && continue
@@ -70,7 +70,7 @@ make_green_sysroot() {
   # --- kernel: cmdline ----------------------------------------------------
   local fragment
   fragment=$(grep -v '^[[:space:]]*#' \
-    "$REPO_ROOT/packages/steel-kernel-hardening/src/cmdline/hardening" | tr '\n' ' ')
+    "$REPO_ROOT/packages/steel-kernel-hardening/hardening" | tr '\n' ' ')
   mkdir -p "$root/proc"
   printf 'ro quiet roothash=deadbeefcafe %s\n' "$fragment" > "$root/proc/cmdline"
 
@@ -79,7 +79,7 @@ make_green_sysroot() {
   printf 'none integrity [confidentiality]\n' > "$root/sys/kernel/security/lockdown"
   printf 'Y\n' > "$root/sys/module/module/parameters/sig_enforce"
   mkdir -p "$root/etc/modprobe.d"
-  cp "$REPO_ROOT/packages/steel-kernel-hardening/src/modprobe/99-steel-blacklist.conf" \
+  cp "$REPO_ROOT/packages/steel-kernel-hardening/99-steel-blacklist.conf" \
      "$root/etc/modprobe.d/"
   printf '' > "$root/proc/modules"
 
@@ -99,21 +99,21 @@ make_green_sysroot() {
 tmpfs /tmp tmpfs rw,nosuid,nodev,noexec,relatime 0 0
 EOF
   mkdir -p "$root/etc/udisks2"
-  cp "$REPO_ROOT/packages/steel-desktop/src/udisks2-mount-options.conf" \
+  cp "$REPO_ROOT/packages/steel-desktop/udisks2-mount-options.conf" \
      "$root/etc/udisks2/mount_options.conf"
   mkdir -p "$root/etc/security/limits.d" "$root/etc/systemd/coredump.conf.d"
-  cp "$REPO_ROOT/packages/steel-kernel-hardening/src/limits/99-steel-coredump.conf" \
+  cp "$REPO_ROOT/packages/steel-kernel-hardening/99-steel-coredump.conf" \
      "$root/etc/security/limits.d/"
-  cp "$REPO_ROOT/packages/steel-kernel-hardening/src/systemd/coredump-99-steel.conf" \
+  cp "$REPO_ROOT/packages/steel-kernel-hardening/coredump-99-steel.conf" \
      "$root/etc/systemd/coredump.conf.d/99-steel.conf"
 
   # --- network ------------------------------------------------------------
   mkdir -p "$root/etc/systemd/resolved.conf.d" "$root/etc/NetworkManager/conf.d"
-  cp "$REPO_ROOT/packages/steel-network/src/resolved.conf" \
+  cp "$REPO_ROOT/packages/steel-network/resolved.conf" \
      "$root/etc/systemd/resolved.conf.d/99-steel.conf"
-  cp "$REPO_ROOT/packages/steel-network/src/nm-steel-privacy.conf" \
+  cp "$REPO_ROOT/packages/steel-network/nm-steel-privacy.conf" \
      "$root/etc/NetworkManager/conf.d/99-steel-privacy.conf"
-  cp "$REPO_ROOT/packages/steel-network/src/nm-steel-connectivity.conf" \
+  cp "$REPO_ROOT/packages/steel-network/nm-steel-connectivity.conf" \
      "$root/etc/NetworkManager/conf.d/98-steel-connectivity.conf"
   mkdir -p "$root/usr/lib/steelos"
   printf '' > "$root/usr/lib/steelos/captive-portal-helper"
@@ -125,11 +125,11 @@ EOF
     > "$root/sys/kernel/security/apparmor/profiles"
   mkdir -p "$root/usr/bin" "$root/var/lib/flatpak/overrides"
   printf '' > "$root/usr/bin/flatpak"
-  cp "$REPO_ROOT/packages/steel-sandbox/src/flatpak-global-override" \
+  cp "$REPO_ROOT/packages/steel-sandbox/flatpak-global-override" \
      "$root/var/lib/flatpak/overrides/global"
   printf '' > "$root/usr/bin/bubblejail"
   mkdir -p "$root/usr/share/steel-sandbox/bubblejail"
-  cp "$REPO_ROOT"/packages/steel-sandbox/src/bubblejail/*.toml \
+  cp "$REPO_ROOT"/packages/steel-sandbox/*.toml \
      "$root/usr/share/steel-sandbox/bubblejail/"
 
   # --- identity -----------------------------------------------------------

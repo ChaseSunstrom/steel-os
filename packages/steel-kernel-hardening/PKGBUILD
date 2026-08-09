@@ -15,16 +15,23 @@ backup=(
   'etc/modprobe.d/99-steel-blacklist.conf'
   'etc/security/limits.d/99-steel-coredump.conf'
 )
+
+# Payload sits next to this PKGBUILD, listed by plain filename. makepkg resolves
+# a local source= entry by BASENAME against $startdir, so 'src/sysctl/foo.conf'
+# is looked for as 'foo.conf' beside the PKGBUILD and never found — that is what
+# broke the packaging job. Reaching out with $startdir instead breaks in a clean
+# chroot and namcap rejects it, and a payload directory named src/ is deleted by
+# makepkg --clean, because $srcdir is literally $startdir/src.
 source=(
-  'src/sysctl/99-steel-hardening.conf'
-  'src/sysctl/98-steel-userns.conf'
-  'src/modprobe/99-steel-blacklist.conf'
-  'src/modprobe/99-steel-blacklist-strict.conf'
-  'src/cmdline/hardening'
-  'src/cmdline/hardening-strict'
-  'src/limits/99-steel-coredump.conf'
-  'src/systemd/coredump-99-steel.conf'
-  'src/systemd/tmp-mount-99-steel.conf'
+  '99-steel-hardening.conf'
+  '98-steel-userns.conf'
+  '99-steel-blacklist.conf'
+  '99-steel-blacklist-strict.conf'
+  'hardening'
+  'hardening-strict'
+  '99-steel-coredump.conf'
+  'coredump-99-steel.conf'
+  'tmp-mount-99-steel.conf'
 )
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 

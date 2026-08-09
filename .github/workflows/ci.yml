@@ -103,10 +103,13 @@ jobs:
         run: |
           # Every shell script we ship. The .install files are pacman scriptlets
           # sourced by bash, so they get checked too — a syntax error there
-          # breaks package installation with no useful message.
-          find tools packages tests -type f \
+          # breaks package installation with no useful message. iso/ and image/
+          # are in scope for the same reason: they run as root against real
+          # block devices, which is the worst place to find out a variable was
+          # empty.
+          find tools packages tests iso image calamares -type f \
             \( -name '*.sh' -o -name '*.install' -o -perm -u+x \) \
-            ! -path '*/target/*' ! -path '*/out/*' -print0 \
+            ! -path '*/target/*' ! -path '*/out/*' ! -path '*/work/*' -print0 \
           | xargs -0 --no-run-if-empty file --mime-type \
           | grep -E 'x-shellscript|x-sh' \
           | cut -d: -f1 \
@@ -122,7 +125,9 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          pacman -Syu --noconfirm --needed git rust namcap sudo
+          # python: steel-installer's check() runs the comprehension tests
+          # before the package that ships them is allowed to build.
+          pacman -Syu --noconfirm --needed git rust namcap sudo python
           useradd -m build
           echo 'build ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 
@@ -145,14 +150,21 @@ jobs:
           done
           exit $fail
 
+      - name: Snapshot the workspace source
+        run: |
+          # steel-installer builds from the whole workspace, not from files
+          # beside its PKGBUILD, so it needs the source tarball first.
+          ./packages/prepare-workspace-source.sh
+          chown -R build:build packages
+
       - name: Build config packages
         run: |
-          # steel-check needs the Rust workspace and is built in the job above;
-          # here we verify the config packages actually assemble.
+          # steel-check and steel-config are Rust and are built in the job
+          # above; here we verify the config packages actually assemble.
           for pkg in steel-kernel-hardening steel-malloc steel-network \
                      steel-sandbox steel-apparmor steel-desktop steel-identity \
                      steel-backup steel-duress steel-custody steel-vault \
-                     steel-boot steel-base; do
+                     steel-boot steel-base steel-installer; do
             echo "::group::$pkg"
             (cd "packages/$pkg" && sudo -u build makepkg --nodeps --noconfirm --clean)
             echo "::endgroup::"
@@ -190,7 +202,10 @@ jobs:
             usr/bin/steel-profile-manager \
             usr/lib/steelos/boot-complete-health.sh \
             usr/lib/systemd/system/steel-boot-complete.service \
-            usr/lib/systemd/user/steel-backup.timer
+            usr/lib/systemd/user/steel-backup.timer \
+            etc/calamares/settings.conf \
+            usr/lib/calamares/modules/bootsec/main.py \
+            usr/lib/calamares/modules/threatened/main.py
           do
             if [ ! -e "/tmp/stage/$path" ]; then
               echo "missing from the built packages: $path"
@@ -234,7 +249,7 @@ jobs:
         run: |
           # An early return on an unconfigured machine would make it measurably
           # faster than a configured one.
-          if grep -nE '^\s*return\s*$|^\s*exit 0' packages/steel-duress/src/initcpio-hook; then
+          if grep -nE '^\s*return\s*$|^\s*exit 0' packages/steel-duress/initcpio-hook; then
             echo "The initramfs hook returns early."
             echo "On an unconfigured machine it must do the SAME work and take the"
             echo "SAME time as on a configured one."
@@ -254,3 +269,64 @@ jobs:
               exit 1
             fi
           done
+
+  iso:
+    name: Live ISO
+    runs-on: ubuntu-latest
+    # Longer than the default because this pacstraps a Plasma desktop and
+    # compiles Calamares. It is still far cheaper than discovering the installer
+    # medium does not build on the day of a release.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image ships several GB of toolchains this job will never
+      # use, and the pacstrap tree plus the squashfs plus the ISO do not fit
+      # alongside them.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup \
+                      "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      # mkarchiso mounts filesystems and uses loop devices, so it needs a
+      # privileged container rather than the `container:` key, which cannot
+      # grant that.
+      - name: Build the ISO
+        run: |
+          # The pacstrap tree and the squashfs are several GB of scratch. Keep
+          # them out of the checkout so nothing downstream has to know to skip
+          # them.
+          mkdir -p "$RUNNER_TEMP/iso-out" "$RUNNER_TEMP/iso-work"
+          docker run --rm --privileged \
+            -v "$PWD:/repo" \
+            -v "$RUNNER_TEMP/iso-out:/out" \
+            -v "$RUNNER_TEMP/iso-work:/isowork" \
+            -e STEELOS_ISO_OUT=/out \
+            -e STEELOS_ISO_WORK=/isowork \
+            archlinux:base-devel bash -euo pipefail -c '
+              pacman -Syu --noconfirm --needed \
+                archiso git rust python squashfs-tools dosfstools mtools \
+                libisoburn sudo
+              useradd -m build
+              echo "build ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+              cd /repo
+              chown -R build:build .
+              ./iso/build.sh
+            '
+
+      - name: Report what was built
+        run: |
+          ls -lh "$RUNNER_TEMP/iso-out"
+          cat "$RUNNER_TEMP"/iso-out/*.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steelos-iso
+          path: |
+            ${{ runner.temp }}/iso-out/*.iso
+            ${{ runner.temp }}/iso-out/*.sha256
+          retention-days: 7
+          compression-level: 0

@@ -134,9 +134,54 @@ jobs:
           name: consoles-${{ matrix.preset }}
           path: ${{ runner.temp }}/vm/*/console.log
 
+  iso:
+    name: Build the live ISO
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup \
+                      "$AGENT_TOOLSDIRECTORY" || true
+
+      # mkarchiso needs mounts and loop devices, which the `container:` key
+      # cannot grant. Same script CI runs on every push, so a release never
+      # exercises an ISO build path that has not already been exercised.
+      - name: Build
+        run: |
+          mkdir -p "$RUNNER_TEMP/iso-out" "$RUNNER_TEMP/iso-work"
+          docker run --rm --privileged \
+            -v "$PWD:/repo" \
+            -v "$RUNNER_TEMP/iso-out:/out" \
+            -v "$RUNNER_TEMP/iso-work:/isowork" \
+            -e STEELOS_ISO_OUT=/out \
+            -e STEELOS_ISO_WORK=/isowork \
+            archlinux:base-devel bash -euo pipefail -c '
+              pacman -Syu --noconfirm --needed \
+                archiso git rust python squashfs-tools dosfstools mtools \
+                libisoburn sudo
+              useradd -m build
+              echo "build ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+              cd /repo
+              chown -R build:build .
+              ./iso/build.sh
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iso
+          path: |
+            ${{ runner.temp }}/iso-out/*.iso
+            ${{ runner.temp }}/iso-out/*.sha256
+          retention-days: 7
+          compression-level: 0
+
   publish:
     name: Publish
-    needs: [build, matrix]
+    needs: [build, matrix, iso]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -144,12 +189,17 @@ jobs:
         with:
           name: image
           path: image/out/
+      - uses: actions/download-artifact@v4
+        with:
+          name: iso
+          path: iso/out/
 
       - name: Publish hashes
         run: |
           # "Same inputs => same image hash" is only a meaningful claim if the
           # hashes are public and anyone can check a rebuild against ours.
           cat image/out/steelos.sha256
+          cat iso/out/*.sha256
 
       - name: Create the release
         uses: softprops/action-gh-release@v2
@@ -162,6 +212,8 @@ jobs:
             image/out/steelos.roothash.p7s
             image/out/steelos.sha256
             image/out/steelos.metadata
+            iso/out/*.iso
+            iso/out/*.iso.sha256
           body: |
             ## ${{ needs.build.outputs.image-id }}
 

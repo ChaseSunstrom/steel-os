@@ -16,23 +16,28 @@ optdepends=(
   'systemd: sysupdate performs the image transfer steelctl schedules'
 )
 backup=('etc/steelos/manifest.toml')
-source=("$pkgname-$pkgver.tar.gz::file://$PWD/../../")
+
+# Built from the workspace snapshot produced by
+# packages/prepare-workspace-source.sh — see packages/steel-check/PKGBUILD for
+# why makepkg cannot take the workspace directory as a local source.
+source=("steel-os-$pkgver.tar.gz")
 sha256sums=('SKIP')
+_src="steel-os-$pkgver"
 
 build() {
-  cd "$srcdir"
+  cd "$srcdir/$_src"
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
   cargo build --release --frozen --package steelctl
 }
 
 check() {
-  cd "$srcdir"
-  export RUSTUP_TOOLCHAIN=stable
+  cd "$srcdir/$_src"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
   cargo test --release --frozen --package steelctl
 }
 
 package() {
-  cd "$srcdir"
+  cd "$srcdir/$_src"
   install -Dm755 target/release/steelctl "$pkgdir/usr/bin/steelctl"
   # The default manifest becomes the user's starting point, and is also kept
   # unmodified under /usr/share so `steelctl` can show what changed from stock.

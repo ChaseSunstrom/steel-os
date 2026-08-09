@@ -17,10 +17,17 @@ backup=(
   'etc/systemd/logind.conf.d/99-steel.conf'
   'etc/xdg/kdeglobals'
 )
+
+# Payload sits next to this PKGBUILD, listed by plain filename. makepkg resolves
+# a local source= entry by BASENAME against $startdir, so 'src/sysctl/foo.conf'
+# is looked for as 'foo.conf' beside the PKGBUILD and never found — that is what
+# broke the packaging job. Reaching out with $startdir instead breaks in a clean
+# chroot and namcap rejects it, and a payload directory named src/ is deleted by
+# makepkg --clean, because $srcdir is literally $startdir/src.
 source=(
-  'src/udisks2-mount-options.conf'
-  'src/logind-steel.conf'
-  'src/kdeglobals'
+  'udisks2-mount-options.conf'
+  'logind-steel.conf'
+  'kdeglobals'
 )
 sha256sums=('SKIP' 'SKIP' 'SKIP')
 

@@ -139,9 +139,9 @@ CMDLINE_FILE="$OUT_DIR/cmdline"
   # The hardening fragment the packages ship, so what CI bakes in and what
   # steel-check audits against cannot drift apart.
   grep -v '^[[:space:]]*#' \
-    "$REPO_ROOT/packages/steel-kernel-hardening/src/cmdline/hardening" | tr '\n' ' '
+    "$REPO_ROOT/packages/steel-kernel-hardening/hardening" | tr '\n' ' '
   grep -v '^[[:space:]]*#' \
-    "$REPO_ROOT/packages/steel-apparmor/src/apparmor-cmdline" | tr '\n' ' '
+    "$REPO_ROOT/packages/steel-apparmor/apparmor-cmdline" | tr '\n' ' '
   # Image-only settings: safe here because modules are built and signed during
   # this build, so there is no DKMS-at-runtime path to break.
   printf ' lockdown=confidentiality module.sig_enforce=1'

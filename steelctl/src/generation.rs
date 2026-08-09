@@ -185,7 +185,7 @@ impl Deployment {
         }
 
         // Newest first, so `history` reads the way people expect.
-        generations.sort_by(|a, b| b.sequence.cmp(&a.sequence));
+        generations.sort_by_key(|g| std::cmp::Reverse(g.sequence));
         Ok(Deployment {
             active,
             generations,
@@ -344,7 +344,7 @@ mod tests {
 
     fn deployment(active: Slot, gens: Vec<Generation>) -> Deployment {
         let mut gens = gens;
-        gens.sort_by(|a, b| b.sequence.cmp(&a.sequence));
+        gens.sort_by_key(|g| std::cmp::Reverse(g.sequence));
         Deployment {
             active,
             generations: gens,

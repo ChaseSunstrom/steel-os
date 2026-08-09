@@ -19,7 +19,9 @@ note() { printf 'postinst: %s\n' "$*" >&2; }
 
 note "redirecting writable paths to /var"
 for dir in opt srv; do
-  rm -rf "/$dir"
+  # ${dir:?} rather than $dir: this runs as root inside the image, and an empty
+  # loop variable would turn the line into `rm -rf /`.
+  rm -rf "/${dir:?}"
   ln -s "var/$dir" "/$dir"
 done
 

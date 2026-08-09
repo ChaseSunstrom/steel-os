@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# steelos-install — launch the installer from the live session.
+#
+# A thin wrapper on purpose. It exists so there is exactly one entry point that
+# the desktop file, the autostart entry and the sudoers rule all name, rather
+# than three places that each invoke Calamares slightly differently and drift.
+#
+# It runs the hardware check first. Everything that check reports is a decision
+# the installer would otherwise make silently or discover too late: no TPM,
+# vendor-locked Secure Boot, a GPU newer than this channel's kernel. A user who
+# learns about it afterwards has already committed their disk.
+
+set -euo pipefail
+
+log() { printf '\033[1msteelos-install:\033[0m %s\n' "$*"; }
+
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+  exec sudo -n /usr/local/bin/steelos-install "$@"
+fi
+
+report=$(mktemp -t steelos-hardware-XXXXXX.txt)
+if /usr/local/bin/steelos-check-hardware > "$report" 2>&1; then
+  log "hardware check passed; report at $report"
+else
+  # A failed check is informational, not fatal. Every machine it warns about is
+  # still installable — the point is that the user knows going in. Refusing to
+  # start would just teach people to bypass the wrapper.
+  log "hardware check reported problems; see $report"
+fi
+cat "$report"
+
+if ! command -v calamares >/dev/null; then
+  log "calamares is not installed on this medium."
+  log "This ISO was built without the installer; use a release ISO to install."
+  exit 1
+fi
+
+exec calamares -d "$@"

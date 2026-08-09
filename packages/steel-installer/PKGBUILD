@@ -1,0 +1,57 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+#
+# Packages the Calamares configuration and the SteelOS installer modules.
+#
+# This exists so the live ISO does not carry a second copy of the installer
+# config. The ISO installs this package; calamares/ in the repository is the
+# only place the sequence and the modules are written down. A profile that
+# embedded its own copy would drift from the tested one, and the module that
+# ships would be whichever copy someone remembered to update.
+
+pkgname=steel-installer
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SteelOS installer: Calamares sequence and the SteelOS installer modules"
+arch=('any')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('calamares' 'python')
+optdepends=(
+  'steel-check: the post-install verification step runs it'
+  'sbctl: Secure Boot key enrollment in the bootsec module'
+  'tpm2-tools: TPM+PIN binding in the bootsec module'
+)
+backup=('etc/calamares/settings.conf')
+
+# Payload comes from calamares/ inside the workspace snapshot produced by
+# packages/prepare-workspace-source.sh — see packages/steel-check/PKGBUILD for
+# why makepkg cannot take that directory as a local source= entry.
+source=("steel-os-$pkgver.tar.gz")
+sha256sums=('SKIP')
+_src="steel-os-$pkgver"
+
+check() {
+  # The comprehension check decides whether someone has read limits that
+  # describe irreversible, sometimes legal, consequences. It gets a regression
+  # test like anything else that matters, and it runs before the package that
+  # ships it is allowed to build.
+  python3 "$srcdir/$_src/calamares/modules/threatened/test_comprehension.py"
+}
+
+package() {
+  local module
+  cd "$srcdir/$_src"
+
+  install -Dm644 calamares/settings.conf "$pkgdir/etc/calamares/settings.conf"
+
+  # Calamares searches /usr/lib/calamares/modules; settings.conf names that
+  # path explicitly, so the two have to agree.
+  for module in calamares/modules/*/; do
+    module=${module%/}
+    [[ -f $module/module.desc ]] || continue
+    install -Dm644 "$module/module.desc" \
+      "$pkgdir/usr/lib/calamares/modules/${module##*/}/module.desc"
+    install -Dm644 "$module/main.py" \
+      "$pkgdir/usr/lib/calamares/modules/${module##*/}/main.py"
+  done
+}

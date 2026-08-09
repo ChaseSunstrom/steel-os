@@ -11,14 +11,6 @@ optdepends=(
   'audit: richer denial logs, which make profile authoring much less painful'
   'steel-check: report profiles left in complain mode'
 )
-source=(
-  'src/steel-profile'
-  'src/apparmor-cmdline'
-  'src/profiles/usr.bin.firefox'
-  'src/profiles/usr.bin.steel-shell'
-  'src/profiles/usr.lib.steelos.captive-portal-helper'
-)
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 backup=(
   'etc/apparmor.d/usr.bin.firefox'
@@ -27,6 +19,21 @@ backup=(
 )
 
 install=steel-apparmor.install
+
+# Payload sits next to this PKGBUILD, listed by plain filename. makepkg resolves
+# a local source= entry by BASENAME against $startdir, so 'src/sysctl/foo.conf'
+# is looked for as 'foo.conf' beside the PKGBUILD and never found — that is what
+# broke the packaging job. Reaching out with $startdir instead breaks in a clean
+# chroot and namcap rejects it, and a payload directory named src/ is deleted by
+# makepkg --clean, because $srcdir is literally $startdir/src.
+source=(
+  'steel-profile'
+  'apparmor-cmdline'
+  'usr.bin.firefox'
+  'usr.bin.steel-shell'
+  'usr.lib.steelos.captive-portal-helper'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
   install -Dm755 "$srcdir/steel-profile" "$pkgdir/usr/bin/steel-profile"

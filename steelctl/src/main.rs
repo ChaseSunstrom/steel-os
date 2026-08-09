@@ -423,7 +423,7 @@ fn cmd_history(opts: &Options) -> Result<(), String> {
         };
         println!(
             "{:<4} {:<5} {:<28} {:<12} {:<9} {}",
-            g.sequence, g.slot, g.image_id, g.snapshot, state_label, &g.manifest_hash
+            g.sequence, g.slot, g.image_id, g.snapshot, state_label, g.manifest_hash
         );
     }
 

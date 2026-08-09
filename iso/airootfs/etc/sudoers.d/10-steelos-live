@@ -1,0 +1,3 @@
+# The live user runs the installer, which needs root. Nothing else on the medium
+# does, and this file does not survive onto the installed system.
+live ALL=(root) NOPASSWD: /usr/local/bin/steelos-install, /usr/bin/calamares, /usr/local/bin/steelos-check-hardware

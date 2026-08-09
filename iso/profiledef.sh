@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
+
+# Every variable here is read by mkarchiso after it sources this file, hence the
+# blanket SC2034 above: shellcheck cannot see any of them being used.
+#
 # archiso profile for the SteelOS live installer.
 #
 # The live environment's job is narrow: boot on the widest possible range of
@@ -19,13 +24,12 @@ iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y.%m.%d)"
 install_dir="steelos"
 
 buildmodes=('iso')
+# 'bios.syslinux' covers both the isohybrid MBR and El Torito paths, and
+# 'uefi.systemd-boot' covers x64 and ia32, from the ESP and from El Torito.
+# The per-path names archiso used to take are deprecated and now warn.
 bootmodes=(
-  'bios.syslinux.mbr'
-  'bios.syslinux.eltorito'
-  'uefi-ia32.systemd-boot.esp'
-  'uefi-x64.systemd-boot.esp'
-  'uefi-ia32.systemd-boot.eltorito'
-  'uefi-x64.systemd-boot.eltorito'
+  'bios.syslinux'
+  'uefi.systemd-boot'
 )
 
 arch="x86_64"
@@ -40,7 +44,9 @@ airootfs_image_tool_options+=('-no-exports' '-noappend')
 file_permissions=(
   ["/etc/shadow"]="0:0:400"
   ["/etc/gshadow"]="0:0:400"
+  ["/etc/sudoers.d/10-steelos-live"]="0:0:440"
   ["/root"]="0:0:750"
+  ["/home/live"]="1000:1000:750"
   ["/usr/local/bin/steelos-install"]="0:0:755"
   ["/usr/local/bin/steelos-check-hardware"]="0:0:755"
 )

@@ -20,27 +20,30 @@ optdepends=(
   'cryptsetup: LUKS parameter and verity checks'
   'apparmor: profile enforcement check'
 )
-source=("$pkgname-$pkgver.tar.gz::file://$PWD/../../")
-sha256sums=('SKIP')
 
-prepare() {
-  cd "$srcdir"
-  # Vendoring is deliberate but trivial: steel-check has no dependencies. The
-  # step is kept so the build is offline-reproducible if that ever changes, and
-  # so a dependency appearing is visible here rather than silently downloaded.
-  cargo fetch --locked --manifest-path Cargo.toml 2>/dev/null || true
-}
+# Built from a snapshot of the workspace, produced by
+# packages/prepare-workspace-source.sh. Run that before makepkg here. It exists
+# because makepkg cannot take a directory as a local source, and reaching out of
+# the package directory with $startdir breaks in a clean chroot and is rejected
+# by namcap.
+source=("steel-os-$pkgver.tar.gz")
+sha256sums=('SKIP')
+_src="steel-os-$pkgver"
 
 build() {
-  cd "$srcdir"
+  cd "$srcdir/$_src"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  # --frozen is --locked --offline. The workspace has no external dependencies,
+  # so this builds without touching the network; if one ever appears, this fails
+  # loudly here instead of silently downloading it mid-release.
   cargo build --release --frozen --package steel-check
 }
 
 check() {
-  cd "$srcdir"
+  cd "$srcdir/$_src"
   export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
   # The consistency tests compare the shipped drop-ins against the tables the
   # auditor uses. If they fail, the packages and the auditor disagree and the
   # auditor is the one that is wrong — do not ship that.
@@ -48,8 +51,8 @@ check() {
 }
 
 package() {
-  cd "$srcdir"
-  install -Dm755 "target/release/steel-check" "$pkgdir/usr/bin/steel-check"
+  install -Dm755 "$srcdir/$_src/target/release/steel-check" \
+    "$pkgdir/usr/bin/steel-check"
 
   install -dm755 "$pkgdir/etc/steelos"
   install -Dm644 /dev/null "$pkgdir/etc/steelos/expected-listeners"

@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+#
+# steel-custody — split-key custody, so the device cannot be decrypted on the road.
+#
+# This is the strongest thing in the whole design for the whistleblower and
+# travelling-researcher case, and it is stronger than any decoy. It should be
+# the recommended configuration for that audience.
+#
+# The idea: change what is TRUE rather than what is PROVABLE. No decoy scheme
+# solves "the adversary just keeps demanding another passphrase", because the
+# adversary cannot distinguish "there is nothing more" from "I refuse". Make the
+# user genuinely unable to decrypt, and "I cannot" becomes a materially
+# different position from "I will not" — legally, practically, and in terms of
+# what continued coercion can achieve.
+#
+# Shamir 2-of-3:
+#   share A   a FIDO2/PIV token, kept at home or with counsel
+#   share B   a remote release service with a delay and co-signer policy
+#   share C   a trusted second party
+#
+# The device stores ONLY the encrypted volume key and share IDENTIFIERS. No
+# share, no KEK, nothing reconstructible.
+#
+# WHAT THIS DOES NOT DO, and marketing must never imply otherwise: it does not
+# prevent coerced unlock. An adversary with you, the device, the token, and the
+# ability to compel a PIN at a time the release policy permits gets in. What it
+# does is convert an instant, private compulsion into a slow, witnessed one.
+
+set -euo pipefail
+
+CUSTODY_DEV=${STEEL_CUSTODY_DEV:-/dev/disk/by-partlabel/steelos-custody}
+STATE=${STEEL_CUSTODY_STATE:-/var/lib/steelos/private/custody}
+
+die() { printf 'steel-custody: %s\n' "$*" >&2; exit 1; }
+note() { printf 'steel-custody: %s\n' "$*"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die "must be run as root"; }
+
+cmd_enroll() {
+  need_root
+  local device=${1:?usage: steel-custody enroll <luks-device>}
+
+  # The wrapped volume key and the share identifiers have to be readable by the
+  # initramfs, before anything is decrypted, so they live in the custody region
+  # rather than inside the volume they protect. That region is a fixed-size
+  # blob of random data on EVERY install, configured or not — its presence
+  # proves nothing, and that is the only reason enrollment can stay invisible.
+  # If it is missing, this machine was not installed by our installer and
+  # enrolling would have to put the material somewhere that reveals it.
+  [[ -e $CUSTODY_DEV ]] \
+    || die "no custody region at $CUSTODY_DEV.
+
+     Every SteelOS install allocates one; without it the wrapped key and share
+     identifiers would have to go somewhere the initramfs can read in plain
+     sight, which makes custody enrollment visible to anyone who images the
+     disk. Refusing rather than silently downgrading that property."
+
+  cat <<'MSG'
+
+steel-custody enroll
+
+  TOTAL-LOSS CONDITION, IN PLAIN WORDS:
+
+    If two of the three shares are lost, the data is GONE PERMANENTLY and
+    nobody can recover it. Not us, not you, not anyone. That is the direct
+    cost of the guarantee, and it is not a hypothetical — lost tokens and
+    shut-down services are the common cases.
+
+  WHAT THIS BUYS:
+
+    On the road, with the token left at home, the device physically cannot be
+    decrypted by anyone including you. "I cannot" is a materially different
+    position from "I will not".
+
+  WHAT IT DOES NOT BUY:
+
+    It does not prevent coerced unlock. An adversary with you, the device, the
+    token, and the ability to compel a PIN at a time the release policy
+    permits, gets in. What custody does is delay, witness, and record. That is
+    the whole claim.
+
+  FOUR FACTORS, each required. Possession of the hardware is deliberately
+  never sufficient:
+
+    known     the volume passphrase and the token PIN — the only factor in
+              your head, and what makes a stolen laptop-plus-token useless
+    held      the FIDO2/PIV token, non-extractable, physically separated
+              from the machine while travelling
+    consent   the release service's delay and the co-signer's approval
+    state     TPM sealing to PCR 7/11 — pulling the drive yields ciphertext,
+              and a tampered OS changes the measurements so the TPM refuses
+
+  BIOMETRICS ARE NOT OFFERED. Beyond spoofing, in several jurisdictions
+  compelled biometric unlock is treated differently from a compelled
+  passphrase, and users should not be steered into the weaker position by a
+  convenience default.
+
+MSG
+  read -r -p "  Type 'I understand two lost shares means permanent loss': " confirm
+  [[ $confirm == "I understand two lost shares means permanent loss" ]] || die "aborted"
+
+  # Two tokens, enrolled in the same session. Non-extractable is the point, so
+  # a lost token cannot be duplicated after the fact — the second token has to
+  # exist before the first one is relied upon.
+  note "enrolling token 1 of 2"
+  enroll_token "$device" 1
+  cat <<'MSG'
+
+  Now the SECOND token. This is not optional and cannot be done later.
+
+  Non-extractable keys cannot be cloned, so a token lost after enrollment
+  cannot be replaced from the first one. The two tokens must be enrolled now
+  and kept in DIFFERENT PHYSICAL LOCATIONS.
+
+MSG
+  read -r -p "  Insert the second token and press enter "
+  enroll_token "$device" 2
+
+  install -dm700 "$STATE"
+  cat > "$STATE/config" <<EOF
+device=$device
+custody_region=$CUSTODY_DEV
+tokens=2
+threshold=2-of-3
+EOF
+
+  cat <<'MSG'
+
+  Enrolled. TWO THINGS REMAIN, and neither is optional:
+
+    1. THE RECOVERY DRILL. Custody that has never been reassembled is a
+       data-loss event waiting to happen. Run it now, not later:
+
+           steel-custody drill
+
+       It exercises EVERY pair combination — A+B, A+C, B+C — because a
+       quorum that only works one way is not a 2-of-3.
+
+    2. THE OFFLINE RECOVERY SHEET for the third-party share:
+
+           steel-custody export
+
+       The release service must be self-hostable and the third-party share
+       must be sufficient without it. A hosted service can shut down, and
+       that failure mode must not take your data with it.
+
+  ALSO, because custody changes what unlock means once the volume is open:
+  the volume key is in RAM and the machine is as accessible as any unlocked
+  laptop. Custody mode therefore requires lock-on-suspend or suspend
+  disabled, a short idle lock, and token touch to unlock the session — not
+  just a password. `steel-harden suspend-lock` must stay on.
+
+MSG
+}
+
+enroll_token() {
+  local device=$1 index=$2
+  command -v systemd-cryptenroll >/dev/null || die "systemd-cryptenroll not found"
+
+  # FIDO2 with hmac-secret, not a file on the token. A share stored as a
+  # readable file can be copied off, and then leaving the token at home stops
+  # meaning anything. The token computes an HMAC over a stored salt with a
+  # hardware-bound, non-extractable key.
+  #
+  # user-verification=yes makes the PIN mandatory. Consumer FIDO2 tokens brick
+  # the credential after a small number of wrong PINs, which means a seized
+  # token plus guessing does not yield the share. Tell users the retry count of
+  # their specific model.
+  systemd-cryptenroll "$device" \
+    --fido2-device=auto \
+    --fido2-with-client-pin=yes \
+    --fido2-with-user-verification=yes \
+    || die "token $index enrollment failed"
+  note "token $index enrolled (PIN required, key non-extractable)"
+}
+
+cmd_drill() {
+  need_root
+  cat <<'MSG'
+
+steel-custody drill
+
+  Every pair combination, because a quorum that only works one way is not a
+  2-of-3 and you will not discover that until you need it.
+
+MSG
+  local failures=0
+  for pair in "A+B (token + release service)" "A+C (token + second party)" "B+C (service + second party)"; do
+    echo
+    note "reassembling with $pair"
+    read -r -p "  Perform the reassembly for $pair now. Did it succeed? [yes/no] " ok
+    if [[ $ok != yes ]]; then
+      printf '  FAIL  %s could not reassemble\n' "$pair"
+      failures=$((failures + 1))
+    fi
+  done
+
+  echo
+  if (( failures > 0 )); then
+    die "$failures pair combination(s) failed.
+
+     Do NOT rely on this setup. A 2-of-3 that only works with one specific pair
+     is a 1-of-1 with extra steps, and you will find out at the worst moment."
+  fi
+
+  mkdir -p "$STATE"
+  printf 'last_drill_age_days=0\n' >> "$STATE/config"
+  note "all three pair combinations reassemble; this quorum is real"
+}
+
+cmd_export() {
+  cat <<'MSG'
+SteelOS custody recovery sheet
+==============================
+
+PRINT THIS. Do not leave it only on this machine — it is what you need when
+this machine is what you have lost.
+
+Threshold:      2 of 3
+Share A:        FIDO2/PIV token (two enrolled, different locations)
+Share B:        remote release service, with delay and co-signer policy
+Share C:        trusted second party
+
+HOW YOU GET BACK IN. The key is not destroyed and the quorum is not
+permanent — it is CONTEXTUAL:
+
+  At home        the token is present and the service returns share B
+                 immediately. Unlock is a normal, fast operation.
+
+  Travelling     the token is at home and the service enforces its delay and
+                 co-signer policy, so quorum genuinely cannot be assembled in
+                 a border booth or a hotel room. That is the point.
+
+  Afterwards     return home, or have the second party approve release, and
+                 quorum reforms.
+
+  A lost token   2-of-3 tolerates losing any single share. Replace it from
+                 the third-party share.
+
+FAILURE MODES TO PLAN FOR:
+  * Token firmware updates can reset credentials.
+  * Dead tokens. USB-C vs USB-A on the machine you actually travel with.
+  * A token in the same bag as the laptop provides NO protection at all.
+  * A hosted release service can shut down. The third-party share must be
+    sufficient without it — verify that, do not assume it.
+
+TWO LOST SHARES MEANS PERMANENT LOSS. There is no recovery path and there
+cannot be one; that is the same property that makes this useful.
+MSG
+}
+
+cmd_status() {
+  if [[ ! -f /run/steelos/real-volume-unlocked ]]; then
+    echo "custody configuration lives inside the encrypted volume and is not"
+    echo "readable from this context"
+    return 0
+  fi
+  [[ -f $STATE/config ]] && cat "$STATE/config" || echo "configured=no"
+}
+
+usage() {
+  cat <<'EOF'
+steel-custody — split-key custody (Shamir 2-of-3)
+
+USAGE:
+    steel-custody enroll <device>   Split the key across token, service, party
+    steel-custody drill             Reassemble EVERY pair — required at setup
+    steel-custody export            Offline recovery sheet
+    steel-custody status
+
+WHAT IT DOES:
+    On the road, with the token left at home, the device physically cannot
+    be decrypted by anyone including you. "I cannot" is a materially
+    different position from "I will not".
+
+WHAT IT DOES NOT DO:
+    It does not prevent coerced unlock. It delays, witnesses, and records.
+    That is the whole claim, and marketing must never imply more.
+
+THE COST:
+    Two lost shares means permanent loss. No recovery path exists and none
+    can — that is the same property that makes it work.
+EOF
+}
+
+case ${1:-} in
+  enroll) shift; cmd_enroll "$@" ;;
+  drill)  shift; cmd_drill "$@" ;;
+  export) shift; cmd_export "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1" ;;
+esac

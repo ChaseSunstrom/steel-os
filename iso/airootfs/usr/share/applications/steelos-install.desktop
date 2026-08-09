@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Install SteelOS
+GenericName=System Installer
+Comment=Install SteelOS to this machine
+Exec=/usr/local/bin/steelos-install
+Icon=system-software-install
+Terminal=false
+Categories=Qt;System;
+Keywords=calamares;installer;steelos;
