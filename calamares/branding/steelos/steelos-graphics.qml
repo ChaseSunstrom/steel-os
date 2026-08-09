@@ -68,7 +68,7 @@ SteelPage {
         text: qsTr("If this GPU was released in the last few months, the stable channel's kernel may not drive it. Testing tracks a newer snapshot. If the installed system boots to a black screen, the basic-graphics entry on the boot menu will get you back in.")
     }
 
-    Rectangle { Layout.fillWidth: true; height: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
+    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
 
     Text {
         text: qsTr("Update channel")

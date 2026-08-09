@@ -135,7 +135,7 @@ SteelPage {
     Rectangle {
         Layout.fillWidth: true
         Layout.topMargin: root.theme.gap
-        height: 1
+        Layout.preferredHeight: 1
         color: root.theme.border
     }
 

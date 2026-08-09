@@ -119,7 +119,7 @@ SteelPage {
 
     /* --- TPM ------------------------------------------------------------ */
 
-    Rectangle { Layout.fillWidth: true; height: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
+    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
 
     Text {
         text: qsTr("Unlocking")
@@ -170,7 +170,7 @@ SteelPage {
 
     /* --- Recovery key --------------------------------------------------- */
 
-    Rectangle { Layout.fillWidth: true; height: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
+    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
 
     Text {
         text: qsTr("Recovery key")

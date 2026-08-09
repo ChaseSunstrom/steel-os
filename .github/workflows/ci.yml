@@ -61,6 +61,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # setup-python gives a bare interpreter. The YAML check below parses the
+      # installer's configuration the way Calamares does, and a check that
+      # silently skips when its parser is missing is worse than no check, so it
+      # is a hard dependency rather than a try/except.
+      - name: Install Python dependencies
+        run: python3 -m pip install --quiet pyyaml
+
       # The comprehension check is the whole point of the threatened-user step.
       # Its logic decides whether someone has read limits that describe
       # irreversible, sometimes legal, consequences — so it gets a regression
@@ -111,16 +118,27 @@ jobs:
       - name: ISO profile shape
         run: python3 tests/iso/test_profile.py
 
+      # Linted with the Qt that ships, not the Qt the runner happens to have.
+      #
+      # Ubuntu 24.04 carries Qt 6.4; the ISO installs Arch's, currently 6.11.
+      # Checking QML against a four-year-older language version tests something
+      # nobody runs — it would accept what the shipped Qt rejects and reject
+      # what it accepts. An Arch container costs a couple of minutes and lints
+      # what is actually going to execute.
+      #
+      # (Also: on Ubuntu qmllint is in qt6-declarative-dev-TOOLS, not -dev.)
       - name: QML pages compile
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qml6-module-qtquick-controls \
-                                  qml6-module-qtquick-layouts qt6-declarative-dev
-          fail=0
-          for page in calamares/branding/steelos/*.qml; do
-            /usr/lib/qt6/bin/qmllint -I calamares/branding/steelos "$page" || fail=1
-          done
-          exit $fail
+          docker run --rm -v "$PWD:/repo:ro" archlinux:base bash -euo pipefail -c '
+            pacman -Syu --noconfirm --needed qt6-declarative >/dev/null
+            cd /repo/calamares/branding/steelos
+            fail=0
+            for page in *.qml; do
+              printf "%-28s" "$page"
+              if /usr/lib/qt6/bin/qmllint -I . "$page"; then echo OK; else fail=1; fi
+            done
+            exit $fail
+          '
 
   timing:
     name: Unlock-path timing

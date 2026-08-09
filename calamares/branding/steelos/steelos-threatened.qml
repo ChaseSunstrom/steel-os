@@ -159,7 +159,7 @@ SteelPage {
     Rectangle {
         visible: root.optedIn
         Layout.fillWidth: true
-        height: 1
+        Layout.preferredHeight: 1
         color: root.theme.border
     }
 
@@ -238,6 +238,7 @@ SteelPage {
                     model: limitCard.modelData.options
 
                     RadioButton {
+                        id: option
                         required property int index
                         required property string modelData
 
@@ -246,12 +247,18 @@ SteelPage {
                         checked: root.answers[limitCard.modelData.id] === index
                         onClicked: root.answer(limitCard.modelData.id, index)
 
+                        // Addressed by id rather than through `parent`. A
+                        // contentItem is reparented to its control, so `parent`
+                        // does resolve at run time — but only at run time:
+                        // statically it is a bare Item, so nothing checks these
+                        // two properties exist, and a typo here would show up as
+                        // an unlabelled radio button rather than an error.
                         contentItem: Text {
-                            text: parent.text
+                            text: option.text
                             color: root.theme.text
                             font.pixelSize: root.theme.bodySize
                             wrapMode: Text.WordWrap
-                            leftPadding: parent.indicator.width + 6
+                            leftPadding: option.indicator.width + 6
                             verticalAlignment: Text.AlignVCenter
                         }
                     }
@@ -272,7 +279,7 @@ SteelPage {
     Rectangle {
         visible: root.optedIn && root.comprehensionPassed
         Layout.fillWidth: true
-        height: 1
+        Layout.preferredHeight: 1
         color: root.theme.border
     }
 
@@ -390,7 +397,7 @@ SteelPage {
     Rectangle {
         visible: root.optedIn && root.playbook.length > 0
         Layout.fillWidth: true
-        height: 1
+        Layout.preferredHeight: 1
         color: root.theme.border
         Layout.topMargin: root.theme.gap
     }

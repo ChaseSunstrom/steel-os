@@ -77,7 +77,7 @@ SteelPage {
         text: qsTr("Nothing in Compatible is secret and nothing about it is dishonest — it is just less. <tt>steel-check</tt> will report the gap on every run so it does not quietly become permanent.")
     }
 
-    Rectangle { Layout.fillWidth: true; height: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
+    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
 
     SteelNote {
         severity: "info"

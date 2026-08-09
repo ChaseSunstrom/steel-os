@@ -106,7 +106,7 @@ SteelPage {
         onEdited: function(v) { root.customServer = v; state.set({ dnsCustom: v }); }
     }
 
-    Rectangle { Layout.fillWidth: true; height: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
+    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.theme.border; Layout.topMargin: root.theme.gap }
 
     SteelSwitch {
         label: qsTr("Randomise the hardware address")

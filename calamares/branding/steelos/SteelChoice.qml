@@ -46,8 +46,12 @@ Rectangle {
         spacing: choiceTheme.gap
 
         Rectangle {
+            // implicit sizes, not width/height: this sits in a RowLayout, and a
+            // layout child that sets its own geometry is undefined behaviour.
             Layout.alignment: Qt.AlignTop
-            width: 16; height: 16; radius: 8
+            implicitWidth: 16
+            implicitHeight: 16
+            radius: 8
             color: "transparent"
             border.width: 2
             border.color: choice.selected ? choiceTheme.accent : choiceTheme.borderStrong
