@@ -103,6 +103,14 @@ jobs:
               print(f"ok  {path}")
           PY
 
+      # The archiso profile, checked without building an ISO. Every assertion
+      # here is a way mkarchiso fails after forty minutes of pacstrapping
+      # Plasma and compiling Calamares — including the one that caught us: a
+      # file_permissions entry whose parent directory is empty, which git
+      # cannot carry, so it exists in a working tree and not in a checkout.
+      - name: ISO profile shape
+        run: python3 tests/iso/test_profile.py
+
       - name: QML pages compile
         run: |
           sudo apt-get update
@@ -327,6 +335,11 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+
+      # Cheap first. Everything after this step costs the better part of an
+      # hour, and most of what can be wrong with the profile is visible now.
+      - name: Check the profile before building anything
+        run: python3 tests/iso/test_profile.py
 
       # The runner image ships several GB of toolchains this job will never
       # use, and the pacstrap tree plus the squashfs plus the ISO do not fit

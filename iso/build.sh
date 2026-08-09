@@ -110,6 +110,32 @@ pacman -U --noconfirm --needed "$REPO_DIR"/calamares-*.pkg.tar.* >/dev/null
 note "snapshotting the workspace for the packages that build from it"
 "$REPO_ROOT/packages/prepare-workspace-source.sh"
 
+# Install what the packages declare they need to build.
+#
+# makepkg runs with --nodeps below, because the dependency graph between our own
+# packages is satisfied at install time by the repository being assembled, not
+# at build time. But --nodeps also skips makedepends, which are real: without
+# them steel-installer-page fails with "cmake: command not found".
+#
+# Read from the PKGBUILDs rather than listed here, so a package that gains a
+# build dependency does not need this script edited too. Previously this
+# happened to work only because building Calamares pulled cmake in as a side
+# effect — which meant the build succeeded on a cold cache and failed on a warm
+# one.
+note "installing declared makedepends"
+makedeps=()
+for pkg in "${PACKAGES[@]}"; do
+  while read -r dep; do
+    [[ -n $dep ]] && makedeps+=("$dep")
+  done < <(cd "$REPO_ROOT/packages/$pkg" \
+           && sudo -u "$BUILD_USER" makepkg --printsrcinfo 2>/dev/null \
+           | sed -n 's/^\tmakedepends = //p')
+done
+if (( ${#makedeps[@]} > 0 )); then
+  note "  ${makedeps[*]}"
+  pacman -S --noconfirm --needed "${makedeps[@]}" >/dev/null
+fi
+
 note "building ${#PACKAGES[@]} packages from packages/"
 for pkg in "${PACKAGES[@]}"; do
   [[ -f "$REPO_ROOT/packages/$pkg/PKGBUILD" ]] || die "no PKGBUILD for $pkg"
