@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SteelOS mark.
+
+  A shield, because the first thing anyone needs to understand about this
+  system is that it is built to protect what is on it. Inside it, three
+  stacked slabs: the root filesystem is a sealed image, and there are two of
+  them, one live and one standing by. The lit slab is the running deployment;
+  the dim ones are the image it came from and the generation it can fall back
+  to. That is the whole design in three rectangles.
+
+  Deliberately flat and asymmetric. Symmetric bars in a box read as a menu
+  icon at 16px; the offset is what makes this a mark instead.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="SteelOS">
+  <title>SteelOS</title>
+  <defs>
+    <linearGradient id="steelos-plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#39434F"/>
+      <stop offset="1" stop-color="#191F26"/>
+    </linearGradient>
+  </defs>
+
+  <path d="M32 3.5 L57 11.8 L57 30.2 L32 60.5 L7 30.2 L7 11.8 Z"
+        fill="url(#steelos-plate)" stroke="#5AA2C8" stroke-width="2.4"
+        stroke-linejoin="round"/>
+
+  <rect x="17.5" y="17.5" width="29" height="6.4" rx="3.2" fill="#E6EAEE" opacity="0.55"/>
+  <rect x="23"   y="27.3" width="24" height="6.4" rx="3.2" fill="#5AA2C8"/>
+  <rect x="17.5" y="37.1" width="20" height="6.4" rx="3.2" fill="#E6EAEE" opacity="0.35"/>
+</svg>

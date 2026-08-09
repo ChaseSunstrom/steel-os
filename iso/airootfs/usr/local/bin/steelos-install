@@ -36,4 +36,15 @@ if ! command -v calamares >/dev/null; then
   exit 1
 fi
 
-exec calamares -d "$@"
+# The installer's pages read the machine facts and the recovery key that
+# steelos-live-probe wrote to /run/steelos, and the threatened-user page reads
+# the limits it renders from the branding directory. QML refuses local file
+# reads through XMLHttpRequest unless this is set, and without it those pages
+# come up empty with only a warning in the log.
+#
+# This is why the launcher exists as the single entry point rather than the
+# desktop file invoking calamares directly: there is exactly one place the
+# environment is set up, so there is no way to start the installer half-armed.
+export QML_XHR_ALLOW_FILE_READ=1
+
+exec calamares "$@"

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+type:       "job"
+name:       "steelos_threatened"
+interface:  "python"
+script:     "main.py"

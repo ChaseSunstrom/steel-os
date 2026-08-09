@@ -180,9 +180,9 @@ data at all.
 
 ```
 image/       mkosi build definitions, verity, UKI, device layout
-packages/    17 steel-* packages
+packages/    18 steel-* packages
 steelctl/    manifest engine, generations, update/rollback (lib + bin)
-calamares/   installer modules, including the comprehension check
+calamares/   the installer: QML pages, branding, install jobs, one C++ view module
 iso/         archiso profile and build.sh for the live installer
 tools/       steel-check, steel-harden
 tests/       audit assertions, VM matrix, timing harness
@@ -194,7 +194,7 @@ docs/        threat model, rationale, escape hatches, known issues
 ```
 cargo test --all                                    # 153 tests
 tests/audit/run.sh                                  # 11 suite-level assertions
-python3 calamares/modules/threatened/test_comprehension.py   # 13 tests
+python3 calamares/tests/test_installer.py            # 31 tests
 tests/vm/timing-harness.sh                          # unlock-path timing
 sudo ./iso/build.sh                                 # the live installer ISO
 ```

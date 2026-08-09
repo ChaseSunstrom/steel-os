@@ -65,8 +65,13 @@ jobs:
       # Its logic decides whether someone has read limits that describe
       # irreversible, sometimes legal, consequences — so it gets a regression
       # test like anything else that matters.
-      - name: Comprehension and validation logic
-        run: python3 calamares/modules/threatened/test_comprehension.py
+      #
+      # The same suite asserts the wiring: every page in the sequence has a
+      # config, every config points at QML that exists, every job module is
+      # reached. Those otherwise surface as a Calamares error on a stranger's
+      # machine.
+      - name: Comprehension, refusals and wiring
+        run: python3 calamares/tests/test_installer.py
 
       - name: Modules parse
         run: |
@@ -74,6 +79,40 @@ jobs:
             python3 -c "import ast,sys; ast.parse(open('$module').read())" \
               || { echo "syntax error in $module"; exit 1; }
           done
+
+      - name: settings.conf and branding are valid YAML
+        run: |
+          python3 - <<'PY'
+          import sys, pathlib
+          try:
+              import yaml
+          except ImportError:
+              sys.exit("pyyaml is required")
+          # Calamares strips the leading document comments itself; the payload
+          # is the YAML document after the --- marker.
+          for path in [pathlib.Path("calamares/settings.conf"),
+                       pathlib.Path("calamares/branding/steelos/branding.desc"),
+                       *pathlib.Path("calamares/modules-config").glob("*.conf"),
+                       *pathlib.Path("calamares/modules").glob("*/module.desc")]:
+              body = path.read_text()
+              document = body.split("---", 1)[1] if "---" in body else body
+              try:
+                  yaml.safe_load(document)
+              except yaml.YAMLError as error:
+                  sys.exit(f"{path}: {error}")
+              print(f"ok  {path}")
+          PY
+
+      - name: QML pages compile
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qml6-module-qtquick-controls \
+                                  qml6-module-qtquick-layouts qt6-declarative-dev
+          fail=0
+          for page in calamares/branding/steelos/*.qml; do
+            /usr/lib/qt6/bin/qmllint -I calamares/branding/steelos "$page" || fail=1
+          done
+          exit $fail
 
   timing:
     name: Unlock-path timing
@@ -160,7 +199,10 @@ jobs:
       - name: Build config packages
         run: |
           # steel-check and steel-config are Rust and are built in the job
-          # above; here we verify the config packages actually assemble.
+          # above. steel-installer-page is deliberately absent: it compiles
+          # against Calamares' headers, which would mean building Calamares
+          # from the AUR here to save nothing — the ISO job builds it, and
+          # builds it against exactly the Calamares that ships.
           for pkg in steel-kernel-hardening steel-malloc steel-network \
                      steel-sandbox steel-apparmor steel-desktop steel-identity \
                      steel-backup steel-duress steel-custody steel-vault \
@@ -204,8 +246,14 @@ jobs:
             usr/lib/systemd/system/steel-boot-complete.service \
             usr/lib/systemd/user/steel-backup.timer \
             etc/calamares/settings.conf \
-            usr/lib/calamares/modules/bootsec/main.py \
-            usr/lib/calamares/modules/threatened/main.py
+            etc/calamares/modules/steelospage-disk.conf \
+            usr/lib/calamares/modules/steelos_partition/main.py \
+            usr/lib/calamares/modules/steelos_threatened/main.py \
+            usr/share/calamares/branding/steelos/branding.desc \
+            usr/share/calamares/branding/steelos/steelos-disk.qml \
+            usr/share/calamares/branding/steelos/threatened-limits.json \
+            usr/share/calamares/branding/steelos/logo.svg \
+            usr/share/steelos/device-layout/40-custody.conf
           do
             if [ ! -e "/tmp/stage/$path" ]; then
               echo "missing from the built packages: $path"

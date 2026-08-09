@@ -1,0 +1,46 @@
+# Maintainer: SteelOS <security@steelos.invalid>
+#
+# The one compiled piece of the installer: a Calamares view module whose only
+# job is to let a QML page refuse to go forward.
+#
+# It is a separate package from steel-installer because it is the only thing in
+# the project that needs Calamares' headers and a C++ toolchain to build.
+# Keeping it separate means the packaging CI job — which builds every config
+# package in about two minutes — does not have to build Calamares from the AUR
+# first just to compile eighty lines.
+#
+# See calamares/viewmodule/SteelPageViewStep.h for why it has to exist at all:
+# Calamares gates the Next button through a slot that inspects sender(), so a
+# QML page cannot disable it, and several SteelOS pages collect input that later
+# jobs act on irreversibly.
+
+pkgname=steel-installer-page
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Calamares view module for the SteelOS installer pages"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ChaseSunstrom/steel-os"
+license=('GPL-3.0-or-later')
+depends=('calamares' 'qt6-base' 'qt6-declarative')
+makedepends=('cmake' 'ninja' 'qt6-tools' 'extra-cmake-modules' 'yaml-cpp'
+             'kpmcore' 'libpwquality')
+
+# Built from the workspace snapshot produced by
+# packages/prepare-workspace-source.sh — see packages/steel-check/PKGBUILD for
+# why makepkg cannot take that directory as a local source= entry.
+source=("steel-os-$pkgver.tar.gz")
+sha256sums=('SKIP')
+_src="steel-os-$pkgver"
+
+build() {
+  cmake -G Ninja \
+    -S "$srcdir/$_src/calamares/viewmodule" \
+    -B "$srcdir/build" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build "$srcdir/build"
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+}

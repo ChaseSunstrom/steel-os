@@ -1,5 +1,0 @@
----
-type:       "view"
-name:       "profiles"
-interface:  "python"
-script:     "main.py"

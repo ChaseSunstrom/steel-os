@@ -4,8 +4,10 @@
 #
 # Four steps, in this order, because each depends on the one before:
 #
-#   1. Build every steel-* package from packages/ in this checkout.
-#   2. Build Calamares, which Arch does not ship in its official repositories.
+#   1. Build Calamares, which Arch does not ship in its official repositories,
+#      and install it — steel-installer-page is a Calamares view module and
+#      needs its headers to compile.
+#   2. Build every steel-* package from packages/ in this checkout.
 #   3. Assemble those into a local pacman repository.
 #   4. Run mkarchiso against a copy of iso/ whose pacman.conf points at it.
 #
@@ -34,6 +36,7 @@ BUILD_USER=${STEELOS_BUILD_USER:-build}
 PACKAGES=(
   steel-check
   steel-config
+  steel-installer-page
   steel-kernel-hardening
   steel-malloc
   steel-network
@@ -71,24 +74,7 @@ mkdir -p "$OUT_DIR" "$WORK_DIR" "$REPO_DIR"
 # be able to. Everything else here runs as root.
 chown "$BUILD_USER" "$WORK_DIR"
 
-# --- 1. The steel-* packages --------------------------------------------------
-
-note "snapshotting the workspace for the packages that build from it"
-"$REPO_ROOT/packages/prepare-workspace-source.sh"
-
-note "building ${#PACKAGES[@]} packages from packages/"
-for pkg in "${PACKAGES[@]}"; do
-  [[ -f "$REPO_ROOT/packages/$pkg/PKGBUILD" ]] || die "no PKGBUILD for $pkg"
-  note "  $pkg"
-  # --nodeps because the dependency graph is between our own packages and is
-  # satisfied at install time by the repository we are about to build, not at
-  # build time. -f so a rebuild does not stop on an existing artefact.
-  ( cd "$REPO_ROOT/packages/$pkg" \
-    && chown -R "$BUILD_USER" . \
-    && sudo -u "$BUILD_USER" makepkg --nodeps --noconfirm --clean -f )
-done
-
-# --- 2. Calamares -------------------------------------------------------------
+# --- 1. Calamares -------------------------------------------------------------
 #
 # Arch does not ship Calamares in core or extra, so it is built from the AUR
 # PKGBUILD. Deliberately not pulled from a third-party binary repository: this
@@ -110,6 +96,31 @@ else
     || die "calamares failed to build"
   cp "$CALAMARES_DIR"/calamares-*.pkg.tar.* "$REPO_DIR/"
 fi
+
+
+# Installed, not just built: steel-installer-page is a Calamares view module and
+# compiles against its headers. Without this the package build fails at cmake's
+# find_package(Calamares) with a message about a missing config file, which is a
+# long way from "build Calamares first".
+note "installing calamares so the view module can compile against it"
+pacman -U --noconfirm --needed "$REPO_DIR"/calamares-*.pkg.tar.* >/dev/null
+
+# --- 2. The steel-* packages --------------------------------------------------
+
+note "snapshotting the workspace for the packages that build from it"
+"$REPO_ROOT/packages/prepare-workspace-source.sh"
+
+note "building ${#PACKAGES[@]} packages from packages/"
+for pkg in "${PACKAGES[@]}"; do
+  [[ -f "$REPO_ROOT/packages/$pkg/PKGBUILD" ]] || die "no PKGBUILD for $pkg"
+  note "  $pkg"
+  # --nodeps because the dependency graph is between our own packages and is
+  # satisfied at install time by the repository we are about to build, not at
+  # build time. -f so a rebuild does not stop on an existing artefact.
+  ( cd "$REPO_ROOT/packages/$pkg" \
+    && chown -R "$BUILD_USER" . \
+    && sudo -u "$BUILD_USER" makepkg --nodeps --noconfirm --clean -f )
+done
 
 # --- 3. The local repository --------------------------------------------------
 

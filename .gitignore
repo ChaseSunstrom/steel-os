@@ -33,3 +33,8 @@ packages/*/steel-os-*.tar.gz
 !**/*.pub
 sbctl-keys/
 secring.*
+
+# Python bytecode. The installer modules are imported by the test suite, which
+# leaves these behind next to the sources.
+__pycache__/
+*.pyc

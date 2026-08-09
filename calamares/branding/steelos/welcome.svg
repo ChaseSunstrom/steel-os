@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The welcome-page image: the mark on its own, at the size Calamares shows in
+  the middle of the first page (recommended 320x150).
+
+  No wordmark, deliberately. Qt's SVG renderer does its own font matching, so a
+  drawn word here would render differently depending on what fonts the live
+  medium happens to have — and the page already says "SteelOS" in text right
+  above it, set in the application font. One name, one rendering.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 150" width="320" height="150"
+     role="img" aria-label="SteelOS">
+  <title>SteelOS</title>
+  <defs>
+    <linearGradient id="steelos-welcome-plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#39434F"/>
+      <stop offset="1" stop-color="#191F26"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(160 75) scale(2.05) translate(-32 -32)">
+    <path d="M32 3.5 L57 11.8 L57 30.2 L32 60.5 L7 30.2 L7 11.8 Z"
+          fill="url(#steelos-welcome-plate)" stroke="#5AA2C8" stroke-width="2.4"
+          stroke-linejoin="round"/>
+    <rect x="17.5" y="17.5" width="29" height="6.4" rx="3.2" fill="#E6EAEE" opacity="0.55"/>
+    <rect x="23"   y="27.3" width="24" height="6.4" rx="3.2" fill="#5AA2C8"/>
+    <rect x="17.5" y="37.1" width="20" height="6.4" rx="3.2" fill="#E6EAEE" opacity="0.35"/>
+  </g>
+</svg>

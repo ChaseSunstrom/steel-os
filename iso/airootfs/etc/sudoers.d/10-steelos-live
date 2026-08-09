@@ -1,3 +1,7 @@
 # The live user runs the installer, which needs root. Nothing else on the medium
 # does, and this file does not survive onto the installed system.
-live ALL=(root) NOPASSWD: /usr/local/bin/steelos-install, /usr/bin/calamares, /usr/local/bin/steelos-check-hardware
+#
+# Only the launcher is listed. Calamares itself is deliberately not, because the
+# launcher is where the installer's environment is set up — running the binary
+# directly produces pages that silently cannot read the machine's facts.
+live ALL=(root) NOPASSWD: /usr/local/bin/steelos-install, /usr/local/bin/steelos-check-hardware

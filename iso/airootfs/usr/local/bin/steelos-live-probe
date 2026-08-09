@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+#
+# steelos-live-probe — everything the installer needs to know about this
+# machine, gathered once at boot and written where the GUI can read it.
+#
+# The installer's pages are QML. QML cannot run processes, and giving an
+# installer UI the ability to shell out is a bad idea in a program that runs as
+# root against block devices. So the facts are collected here, by a script that
+# can be read and audited on its own, and the UI only ever reads a file.
+#
+# Two files are produced:
+#
+#   /run/steelos/hardware.json   what this machine is and what it can do
+#   /run/steelos/recovery-key    the LUKS recovery key for this installation
+#
+# The recovery key is generated HERE rather than in the UI or in the install
+# job, for one reason: the user is shown it and has to confirm part of it
+# before the install starts, and the job that enrols it must enrol exactly what
+# they were shown. One source, read twice. QML's Math.random() is not a
+# cryptographic RNG and must never be what stands between someone and their
+# disk.
+
+set -euo pipefail
+
+STATE=${STEELOS_LIVE_STATE:-/run/steelos}
+install -dm755 "$STATE"
+
+# --- Recovery key -------------------------------------------------------------
+#
+# 8 groups of 5 from a 32-character alphabet: 160 bits before the alphabet
+# restriction, ~206 bits of entropy. Crockford base32 without I, L, O and U, so
+# it can be read off a screen and typed back without the classic 0/O and 1/l
+# confusions, and without accidentally spelling anything.
+
+if [[ ! -s $STATE/recovery-key ]]; then
+  alphabet='0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+  key=""
+  for group in 1 2 3 4 5 6 7 8; do
+    chunk=""
+    for _ in 1 2 3 4 5; do
+      # /dev/urandom, rejection-free: read a byte, reduce modulo 32. 256 is a
+      # multiple of 32, so this is uniform.
+      byte=$(od -An -N1 -tu1 < /dev/urandom | tr -d ' ')
+      chunk+="${alphabet:$((byte % 32)):1}"
+    done
+    key+=$chunk
+    [[ $group -lt 8 ]] && key+="-"
+  done
+  printf '%s\n' "$key" > "$STATE/recovery-key"
+  chmod 600 "$STATE/recovery-key"
+fi
+
+# --- Facts --------------------------------------------------------------------
+
+json_string() {
+  # Minimal JSON string escaping. The values here are device models and vendor
+  # strings, which do contain quotes and backslashes in the wild.
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/ }
+  printf '"%s"' "$s"
+}
+
+firmware_mode=bios
+[[ -d /sys/firmware/efi ]] && firmware_mode=uefi
+
+secureboot=unknown
+if [[ -d /sys/firmware/efi/efivars ]]; then
+  sb=$(od -An -t u1 -j 4 -N 1 \
+       /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c \
+       2>/dev/null | tr -d ' ' || true)
+  case $sb in
+    1) secureboot=enabled ;;
+    0) secureboot=disabled ;;
+  esac
+fi
+
+setup_mode=false
+if [[ -e /sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c ]]; then
+  sm=$(od -An -t u1 -j 4 -N 1 \
+       /sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c \
+       2>/dev/null | tr -d ' ' || true)
+  [[ $sm == 1 ]] && setup_mode=true
+fi
+
+tpm=none
+if [[ -e /dev/tpmrm0 || -e /dev/tpm0 ]]; then
+  tpm=tpm2
+  # A TPM 1.2 cannot do what we need; report it as present but unusable so the
+  # UI can say why rather than silently offering nothing.
+  if [[ -r /sys/class/tpm/tpm0/tpm_version_major ]]; then
+    [[ $(cat /sys/class/tpm/tpm0/tpm_version_major) == 2 ]] || tpm=tpm1
+  fi
+fi
+
+cpu_vendor=$(sed -n 's/^vendor_id\s*:\s*//p' /proc/cpuinfo | head -1)
+: "${cpu_vendor:=unknown}"
+cpu_model=$(sed -n 's/^model name\s*:\s*//p' /proc/cpuinfo | head -1)
+: "${cpu_model:=unknown}"
+
+# Memory encryption. Supported is a CPU-flag question; active is a kernel
+# question. They differ exactly when the user has to change a firmware setting,
+# which is the case the installer needs to tell them about.
+memenc_supported=false
+memenc_active=false
+if grep -qw sme /proc/cpuinfo || grep -qw tme /proc/cpuinfo; then
+  memenc_supported=true
+fi
+if dmesg 2>/dev/null | grep -qiE 'memory encryption.*(active|enabled)|SME.*active|TME.*enabled'; then
+  memenc_active=true
+fi
+
+iommu=false
+if [[ -d /sys/class/iommu ]] && [[ -n $(ls -A /sys/class/iommu 2>/dev/null) ]]; then
+  iommu=true
+fi
+
+mem_total_kb=$(sed -n 's/^MemTotal:\s*\([0-9]*\).*/\1/p' /proc/meminfo)
+: "${mem_total_kb:=0}"
+
+# GPUs. The installer needs the vendor to warn about a card newer than the
+# channel's kernel, which on a sealed /usr is a wrong-image problem rather than
+# something a driver install can fix afterwards.
+gpus_json=""
+if command -v lspci >/dev/null; then
+  while IFS= read -r line; do
+    [[ -n $gpus_json ]] && gpus_json+=","
+    gpus_json+=$(json_string "$line")
+  done < <(lspci -mm 2>/dev/null | sed -n 's/.*"\(VGA compatible controller\|3D controller\)"\s*"\([^"]*\)"\s*"\([^"]*\)".*/\2 \3/p')
+fi
+
+gpu_vendor=other
+if printf '%s' "$gpus_json" | grep -qi nvidia; then
+  gpu_vendor=nvidia
+elif printf '%s' "$gpus_json" | grep -qiE 'amd|ati'; then
+  gpu_vendor=amd
+elif printf '%s' "$gpus_json" | grep -qi intel; then
+  gpu_vendor=intel
+fi
+
+# Disks. Whole block devices only, no partitions, no loop/ram/live medium.
+disks_json=""
+for dev in /sys/block/*; do
+  name=${dev##*/}
+  case $name in
+    loop*|ram*|sr*|dm-*|md*|zram*) continue ;;
+  esac
+  [[ -r $dev/size ]] || continue
+  sectors=$(cat "$dev/size")
+  (( sectors > 0 )) || continue
+  bytes=$(( sectors * 512 ))
+  removable=false
+  [[ $(cat "$dev/removable" 2>/dev/null || echo 0) == 1 ]] && removable=true
+  rotational=true
+  [[ $(cat "$dev/queue/rotational" 2>/dev/null || echo 1) == 0 ]] && rotational=false
+  model=$(cat "$dev/device/model" 2>/dev/null || echo "")
+  model=${model%"${model##*[![:space:]]}"}
+  : "${model:=$name}"
+
+  # Is the live medium on this device? Installing onto the disk you booted from
+  # is a guaranteed failure, and it should be refused in the UI rather than
+  # discovered at the point of writing a partition table.
+  is_live=false
+  if findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null | grep -q "/dev/$name"; then
+    is_live=true
+  fi
+
+  [[ -n $disks_json ]] && disks_json+=","
+  disks_json+=$(printf '{"name":%s,"path":%s,"bytes":%s,"model":%s,"removable":%s,"rotational":%s,"live":%s}' \
+    "$(json_string "$name")" "$(json_string "/dev/$name")" "$bytes" \
+    "$(json_string "$model")" "$removable" "$rotational" "$is_live")
+done
+
+network=false
+if ip -o route get 1.1.1.1 >/dev/null 2>&1; then
+  network=true
+fi
+
+# The minimum is set by the A/B design: two root slots plus two verity trees
+# plus /var plus the always-allocated custody and decoy regions. Sizing them
+# generously and refusing small disks is better than an install that succeeds
+# and then cannot take an update.
+cat > "$STATE/hardware.json" <<EOF
+{
+  "firmware": "$firmware_mode",
+  "secureBoot": "$secureboot",
+  "setupMode": $setup_mode,
+  "tpm": "$tpm",
+  "cpuVendor": $(json_string "$cpu_vendor"),
+  "cpuModel": $(json_string "$cpu_model"),
+  "memoryEncryptionSupported": $memenc_supported,
+  "memoryEncryptionActive": $memenc_active,
+  "iommu": $iommu,
+  "memoryTotalKb": $mem_total_kb,
+  "gpuVendor": "$gpu_vendor",
+  "gpus": [$gpus_json],
+  "disks": [$disks_json],
+  "network": $network,
+  "minimumDiskBytes": 68719476736
+}
+EOF
+chmod 644 "$STATE/hardware.json"

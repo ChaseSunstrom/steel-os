@@ -1,5 +1,0 @@
----
-type:       "view"
-name:       "graphics"
-interface:  "python"
-script:     "main.py"

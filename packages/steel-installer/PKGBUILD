@@ -1,25 +1,50 @@
 # Maintainer: SteelOS <security@steelos.invalid>
 #
-# Packages the Calamares configuration and the SteelOS installer modules.
+# Packages the installer: the Calamares sequence, the SteelOS branding, the QML
+# pages and the install jobs.
 #
-# This exists so the live ISO does not carry a second copy of the installer
-# config. The ISO installs this package; calamares/ in the repository is the
-# only place the sequence and the modules are written down. A profile that
-# embedded its own copy would drift from the tested one, and the module that
-# ships would be whichever copy someone remembered to update.
+# The one compiled piece — the view module that lets a page refuse to go forward
+# — lives in steel-installer-page, so that building this needs no compiler.
+#
+# This exists so the live ISO does not carry a second copy of any of it. The ISO
+# installs this package; calamares/ in the repository is the only place the
+# sequence, the pages and the jobs are written down. A profile that embedded its
+# own copy would drift from the tested one, and what shipped would be whichever
+# copy someone remembered to update.
 
 pkgname=steel-installer
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="SteelOS installer: Calamares sequence and the SteelOS installer modules"
+pkgdesc="SteelOS installer: Calamares sequence, branding, QML pages and install jobs"
 arch=('any')
 url="https://github.com/ChaseSunstrom/steel-os"
 license=('GPL-3.0-or-later')
-depends=('calamares' 'python')
+depends=(
+  'calamares'
+  # The view module that lets a page refuse to go forward. Separate package
+  # because it is the only part of the installer that needs a compiler.
+  'steel-installer-page'
+  'python'
+  # The pages are QML and the mark is an SVG; without these the installer starts
+  # and shows empty pages, which is a worse failure than not starting.
+  'qt6-declarative'
+  'qt6-svg'
+  # Everything the install jobs shell out to. These are not optional: a missing
+  # one turns into a job failing part-way through writing to someone's disk.
+  'systemd'
+  'cryptsetup'
+  'btrfs-progs'
+  'dosfstools'
+  'util-linux'
+  'steel-check'
+  'steel-boot'
+  'steel-duress'
+)
 optdepends=(
-  'steel-check: the post-install verification step runs it'
-  'sbctl: Secure Boot key enrollment in the bootsec module'
-  'tpm2-tools: TPM+PIN binding in the bootsec module'
+  'sbctl: Secure Boot key enrollment'
+  'tpm2-tools: TPM2 unlock enrollment'
+  'steel-custody: split-key custody, offered by playbooks B and C'
+  'steel-vault: the deniable document volume'
 )
 backup=('etc/calamares/settings.conf')
 
@@ -35,14 +60,26 @@ check() {
   # describe irreversible, sometimes legal, consequences. It gets a regression
   # test like anything else that matters, and it runs before the package that
   # ships it is allowed to build.
-  python3 "$srcdir/$_src/calamares/modules/threatened/test_comprehension.py"
+  #
+  # The same suite also asserts the wiring: every page in the sequence has a
+  # config, every config points at a QML file that exists, and every job module
+  # is actually reached. Those are the failures that otherwise surface as a
+  # Calamares error on a stranger's machine.
+  python3 "$srcdir/$_src/calamares/tests/test_installer.py"
 }
 
 package() {
-  local module
+  local module page config
   cd "$srcdir/$_src"
 
   install -Dm644 calamares/settings.conf "$pkgdir/etc/calamares/settings.conf"
+
+  # Per-module configuration. Calamares resolves these by the name given in
+  # settings.conf's `instances` block, so the filenames are load-bearing.
+  for config in calamares/modules-config/*.conf; do
+    install -Dm644 "$config" \
+      "$pkgdir/etc/calamares/modules/${config##*/}"
+  done
 
   # Calamares searches /usr/lib/calamares/modules; settings.conf names that
   # path explicitly, so the two have to agree.
@@ -53,5 +90,23 @@ package() {
       "$pkgdir/usr/lib/calamares/modules/${module##*/}/module.desc"
     install -Dm644 "$module/main.py" \
       "$pkgdir/usr/lib/calamares/modules/${module##*/}/main.py"
+  done
+
+  # Branding: the descriptor, the stylesheet, the mark, the slideshow, the
+  # shared QML components, the pages, and the limits the threatened-user page
+  # renders and the job validates against. They install together because they
+  # only make sense together.
+  for page in calamares/branding/steelos/*; do
+    install -Dm644 "$page" \
+      "$pkgdir/usr/share/calamares/branding/steelos/${page##*/}"
+  done
+
+  # The partition definitions the installer applies with systemd-repart. Same
+  # files the image build uses, which is what keeps the installed geometry and
+  # the built geometry from drifting apart — so they are shipped rather than
+  # transcribed.
+  for page in image/device-layout/*.conf; do
+    install -Dm644 "$page" \
+      "$pkgdir/usr/share/steelos/device-layout/${page##*/}"
   done
 }

@@ -1,5 +1,0 @@
----
-type:       "view"
-name:       "backup"
-interface:  "python"
-script:     "main.py"

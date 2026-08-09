@@ -1,0 +1,137 @@
+/*
+ * SteelOS installer stylesheet.
+ *
+ * Palette, and the rule behind it:
+ *
+ *   #0E1216  page background      the darkest surface, nothing sits behind it
+ *   #12161B  sidebar
+ *   #1B222A  raised card          anything the user can choose
+ *   #28313B  border / divider
+ *   #E6EAEE  primary text
+ *   #93A1AE  secondary text
+ *   #5AA2C8  accent               ONLY for what is selected or currently true
+ *   #E0A33E  caution              a choice that trades protection for something
+ *   #D9634B  danger               a choice that can destroy data
+ *
+ * The accent is never decorative. If it is blue on this screen, it is the
+ * thing the machine will actually do.
+ */
+
+#mainApp, QWidget {
+    background-color: #0E1216;
+    color: #E6EAEE;
+}
+
+#sidebarApp {
+    background-color: #12161B;
+    color: #93A1AE;
+}
+
+#sidebarMenuApp {
+    background-color: #12161B;
+}
+
+/* The navigation bar carries the only irreversible button in the program. */
+QPushButton {
+    background-color: #1B222A;
+    color: #E6EAEE;
+    border: 1px solid #28313B;
+    border-radius: 4px;
+    padding: 7px 18px;
+    min-height: 18px;
+}
+
+QPushButton:hover {
+    border-color: #5AA2C8;
+}
+
+QPushButton:pressed {
+    background-color: #28313B;
+}
+
+QPushButton:disabled {
+    color: #5C6773;
+    border-color: #1B222A;
+}
+
+QPushButton:default {
+    background-color: #5AA2C8;
+    color: #0E1216;
+    border-color: #5AA2C8;
+    font-weight: 600;
+}
+
+QPushButton:default:hover {
+    background-color: #6FB2D6;
+}
+
+QLabel {
+    color: #E6EAEE;
+    background: transparent;
+}
+
+QGroupBox {
+    border: 1px solid #28313B;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding-top: 10px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: #93A1AE;
+}
+
+QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit, QListView, QTreeView, QTableView {
+    background-color: #1B222A;
+    color: #E6EAEE;
+    border: 1px solid #28313B;
+    border-radius: 4px;
+    selection-background-color: #5AA2C8;
+    selection-color: #0E1216;
+    padding: 4px;
+}
+
+QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus {
+    border-color: #5AA2C8;
+}
+
+QCheckBox, QRadioButton {
+    color: #E6EAEE;
+    spacing: 8px;
+}
+
+QProgressBar {
+    background-color: #1B222A;
+    border: 1px solid #28313B;
+    border-radius: 4px;
+    text-align: center;
+    color: #E6EAEE;
+}
+
+QProgressBar::chunk {
+    background-color: #5AA2C8;
+    border-radius: 3px;
+}
+
+QScrollBar:vertical {
+    background: #0E1216;
+    width: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #28313B;
+    border-radius: 5px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #3A4652;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}

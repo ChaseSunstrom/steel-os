@@ -1,0 +1,65 @@
+# SteelOS installer branding.
+#
+# The installer is the only part of this project most people will ever look at
+# closely, and it is where every irreversible decision gets made. So the visual
+# design has one job: make the state of the machine legible. Dark, flat, high
+# contrast, one accent colour used only for the thing that is currently true or
+# currently selected. No decoration that could be mistaken for information.
+---
+componentName:  steelos
+
+welcomeStyleCalamares:   false
+welcomeExpandingLogo:    false
+
+### WINDOW
+
+windowExpanding:    normal
+# Wider than the Calamares default. Several of our pages have to show a choice
+# and its consequences side by side — a preset that hides what it changes is
+# how people end up with a system they did not choose.
+windowSize: 1000px,680px
+windowPlacement: center
+
+sidebar: widget
+navigation: widget
+
+### STRINGS AND IMAGES
+
+strings:
+    productName:         "SteelOS"
+    shortProductName:    SteelOS
+    version:             "0.1.0"
+    shortVersion:        "0.1"
+    versionedName:       "SteelOS 0.1.0"
+    shortVersionedName:  "SteelOS 0.1"
+    bootloaderEntryName: SteelOS
+    productUrl:          https://github.com/ChaseSunstrom/steel-os
+    supportUrl:          https://github.com/ChaseSunstrom/steel-os/blob/main/docs/escape-hatches.md
+    knownIssuesUrl:      https://github.com/ChaseSunstrom/steel-os/blob/main/docs/known-issues.md
+    releaseNotesUrl:     https://github.com/ChaseSunstrom/steel-os/releases
+    donateUrl:           ""
+
+images:
+    productIcon:         "logo.svg"
+    productLogo:         "logo.svg"
+    productWelcome:      "welcome.svg"
+
+style:
+   SidebarBackground:        "#12161B"
+   SidebarText:              "#93A1AE"
+   SidebarTextCurrent:       "#0E1216"
+   SidebarBackgroundCurrent: "#5AA2C8"
+
+### SLIDESHOW
+
+slideshow:               "show.qml"
+slideshowAPI: 2
+
+# No pastebin. The installer log records the disk layout, the profile names, and
+# which of the duress features were configured; a one-click "upload this
+# somewhere public" button on that is the opposite of what this system is for.
+# Users who need to share a log can read it and decide what to send.
+uploadServer :
+    type :    "none"
+    url :     ""
+    sizeLimit : -1

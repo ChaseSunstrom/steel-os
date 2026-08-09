@@ -19,7 +19,8 @@ compose into a distribution.
 | `steel-sandbox` | Flatpak permission defaults, bubblejail profiles, `steel-shell` |
 | `steel-apparmor` | AppArmor enablement and `steel-profile` |
 | `steel-desktop` | Removable-media mount policy, lock-on-suspend, Plasma privacy defaults |
-| `steel-installer` | Calamares sequence and the SteelOS installer modules |
+| `steel-installer` | Calamares sequence, branding, QML pages and install jobs |
+| `steel-installer-page` | The installer's one compiled piece: a Calamares view module |
 | `steel-keyring` | Not built yet — see its README for why |
 
 ## Later phases

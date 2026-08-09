@@ -22,8 +22,10 @@ non-root build user (makepkg refuses to run as root). Output lands in `iso/out/`
 
 The script does four things in order, because each depends on the one before:
 
-1. builds every `steel-*` package from `packages/`
-2. builds Calamares, which Arch does not ship in its official repositories
+1. builds Calamares, which Arch does not ship in its official repositories, and
+   installs it — `steel-installer-page` is a Calamares view module and compiles
+   against its headers
+2. builds every `steel-*` package from `packages/`
 3. assembles both into a local pacman repository
 4. runs `mkarchiso` against a **copy** of this directory whose `pacman.conf`
    points at that repository
@@ -41,7 +43,7 @@ the release pipeline attaches the resulting ISO to the release.
 | | |
 |---|---|
 | Desktop | Plasma on Wayland, autologin as the unprivileged `live` user |
-| Installer | Calamares, driven by `steel-installer` — the sequence and modules from `calamares/` |
+| Installer | Calamares, driven by `steel-installer` — eight QML pages, the branding, and the install jobs, all from `calamares/` |
 | SteelOS tooling | `steel-check`, `steelctl`, `steel-boot`, `steel-duress`, so the installed system's own tools do the work rather than a parallel implementation that drifts |
 | Diagnosis | `steelos-check-hardware`, plus `pciutils`/`dmidecode`/`inxi` for the machines where installation will not be simple |
 | Recovery | `restic`, `borg`, `age`, `cryptsetup`, `sbctl` — a live ISO is also what people reach for when an installed machine will not boot |
@@ -49,7 +51,14 @@ the release pipeline attaches the resulting ISO to the release.
 `steelos-install` is the single entry point the desktop file, the autostart entry
 and the sudoers rule all name. It runs the hardware check first and shows the
 result, because everything that check reports is a decision the installer would
-otherwise make silently or discover too late.
+otherwise make silently or discover too late. It is also where the installer's
+environment is set up — Calamares run directly comes up with pages that silently
+cannot read the machine's facts, which is why the sudoers rule names the launcher
+and not the binary.
+
+`steelos-live-probe` runs once at boot and writes `/run/steelos/hardware.json`
+and `/run/steelos/recovery-key`. The installer pages read that file and never run
+a process themselves.
 
 ## Two boot entries, both firmware paths
 
@@ -60,6 +69,12 @@ different distribution".
 
 ## Status
 
-The medium boots and the live environment works. The Calamares *sequence* is not
-complete — see `docs/known-issues.md` for exactly which modules are missing. Do
-not describe this ISO as an installer you can hand to someone yet.
+The medium builds, the live environment works, and the installer's GUI is
+complete and verified — the sequence loads, every page renders, and each page's
+validation genuinely gates the Next button.
+
+What has not happened is a real install: no disk has been partitioned, no image
+written, no key enrolled. And this ISO carries no system image, so installing
+from it currently requires a network connection. Both are in
+`docs/known-issues.md`; do not describe this as tested until the VM matrix has
+run.

@@ -1,5 +1,0 @@
----
-type:       "view"
-name:       "netprivacy"
-interface:  "python"
-script:     "main.py"

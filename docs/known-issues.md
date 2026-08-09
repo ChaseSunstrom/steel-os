@@ -13,27 +13,36 @@ available. See `packages/steel-keyring/README.md` for what has to exist first �
 committing a placeholder keypair would make `pacman` appear to verify signatures
 while verifying nothing, which is worse than the current honest gap.
 
-### The ISO builds, but the Calamares sequence is not yet complete
+### The installer has never installed anything
 
-`iso/build.sh` produces a bootable live medium with the desktop, the SteelOS
-tooling and `steel-installer` on it, and CI builds it on every push. What it does
-**not** yet have is everything `calamares/settings.conf` names: the `steelos`
-branding component, the `shellprocess.conf` the `steelos` instance refers to, and
-the `steelos_deploy` / `steelos_verify` exec modules. Calamares will refuse to
-start a sequence whose modules it cannot resolve, so the installer on the current
-ISO does not run end to end.
+The GUI is complete and verified: Calamares loads the sequence, all eight SteelOS
+pages construct, the palette applies, the Next button is genuinely gated by each
+page's validation, and the refusals fire. That is checked in CI and was checked
+by rendering the installer headlessly and driving it.
 
-The ISO is therefore useful today for the live environment and the recovery
-tools, and for testing that the medium boots on real hardware — which is exactly
-what the hardware matrix needs it for — but it is not yet an installer you can
-hand to someone. Those modules are the remaining Phase 6 work.
+What has **not** happened is a real install. `steelos_partition` has never
+partitioned a disk, `steelos_deploy` has never written an image, and
+`steelos_bootsec` has never enrolled a key. Those jobs are written to the design
+and reviewed, and every one of them refuses rather than guesses when its inputs
+are wrong — but reviewed is not verified, and this is the part where a mistake
+destroys someone's disk.
 
-### Calamares is built from the AUR
+The VM matrix in `tests/vm/` is what closes this, and it has not been run.
+
+### The ISO carries no system image
+
+`steelos_deploy` looks for one on the medium and falls back to fetching the
+channel's image over the network. `iso/build.sh` does not embed one, because
+building an image needs signing keys that CI does not have. So an ISO built from
+this repository can install only with a network connection, and a genuinely
+offline install needs a release ISO with the image alongside it.
+
+### Calamares is built from an unpinned AUR revision
 
 Arch does not ship Calamares in `core` or `extra`, so `iso/build.sh` builds it
-from the AUR PKGBUILD during the ISO build. That means an upstream AUR change can
-break our ISO build, and it means the ISO's installer is built from a PKGBUILD we
-do not control.
+from the AUR PKGBUILD during the ISO build, at whatever revision that repository
+is at. An upstream change can therefore break our ISO build, and the installer
+we ship is built from a PKGBUILD we do not control.
 
 The alternative — pulling a binary from a third-party repository — is worse: this
 project's central claim is that you can verify what the system is made of, and an

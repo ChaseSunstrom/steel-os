@@ -19,9 +19,9 @@ VERSION=${STEELOS_VERSION:-0.1.0}
 PREFIX="steel-os-$VERSION"
 TARBALL="$PREFIX.tar.gz"
 
-# The packages that consume it. Adding a fourth means adding it here as well as
+# The packages that consume it. Adding another means adding it here as well as
 # to its own source=() array.
-CONSUMERS=(steel-check steel-config steel-installer)
+CONSUMERS=(steel-check steel-config steel-installer steel-installer-page)
 
 note() { printf '\033[1mprepare-source:\033[0m %s\n' "$*" >&2; }
 

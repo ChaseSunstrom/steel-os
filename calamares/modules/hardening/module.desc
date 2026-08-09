@@ -1,5 +1,0 @@
----
-type:       "view"
-name:       "hardening"
-interface:  "python"
-script:     "main.py"

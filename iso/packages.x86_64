@@ -24,9 +24,17 @@ memtest86+-efi
 calamares
 steel-installer
 qt6-base
+qt6-declarative
+qt6-svg
 kpmcore
 squashfs-tools
 rsync
+
+# Fonts. The installer draws its own pages, and a live medium with no font
+# renders every one of them as boxes — which looks like a broken ISO rather
+# than a missing package.
+noto-fonts
+ttf-dejavu
 
 # A desktop, because a graphical installer needs one. Wayland, matching what
 # gets installed. plasma-workspace provides the Wayland session directly —

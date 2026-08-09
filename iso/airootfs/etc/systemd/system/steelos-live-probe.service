@@ -1,0 +1,19 @@
+[Unit]
+Description=Collect installer facts and generate the recovery key
+Documentation=https://github.com/ChaseSunstrom/steel-os
+DefaultDependencies=no
+After=systemd-udev-settle.service local-fs.target
+Wants=systemd-udev-settle.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/steelos-live-probe
+# /run only. Nothing this writes may outlive the live session, least of all the
+# recovery key.
+RuntimeDirectory=steelos
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

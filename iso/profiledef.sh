@@ -49,4 +49,5 @@ file_permissions=(
   ["/home/live"]="1000:1000:750"
   ["/usr/local/bin/steelos-install"]="0:0:755"
   ["/usr/local/bin/steelos-check-hardware"]="0:0:755"
+  ["/usr/local/bin/steelos-live-probe"]="0:0:755"
 )
